@@ -311,6 +311,10 @@ body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-a
 }
 .fighter .art { border-radius: 10px; }
 .fighter-tag { font-size: 11px; letter-spacing: 0.12em; color: var(--faint); }
+.fighter[data-enc="weak"] .fighter-tag { color: #7be0a6; }
+.fighter[data-enc="strong"] .fighter-tag { color: #ffb36b; font-weight: 700; }
+.fighter[data-enc="elite"] .fighter-tag { color: #ff6e8c; font-weight: 900; }
+.fighter[data-enc="elite"] { box-shadow: 0 0 0 1px rgba(255, 110, 140, 0.55), 0 0 26px -8px #ff6e8c; }
 .fighter-name { font-weight: 700; font-size: 15px; line-height: 1.3; overflow-wrap: anywhere; }
 .fighter-weapon { font-size: 12px; color: var(--r-color); line-height: 1.35; overflow-wrap: anywhere; }
 .hp { display: grid; gap: 3px; }
@@ -2616,11 +2620,13 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
    * 每本可讓武器庫裡任一把未滿級的武器熟練度 +1 級（保留該級的進度比例）。
    * ------------------------------------------------------------------ */
   const BOOK_DROP = { win: 0.1, draw: 0.04, loss: 0.04 }; // 勝利 10%、平手或落敗 4%
+  const BOOK_DROP_BONUS = { strong: 0.15, elite: 0.25 };   // 擊敗強敵 15%、精英 25%
   const BOOK_MAX = 99;
   // 這場是否掉落技能書：只有出戰武器熟練度已滿級才會掉；rand 可傳入以便測試
-  function rollBook(result, masteryLevel, rand) {
+  function rollBook(result, masteryLevel, rand, encounter) {
     if ((masteryLevel | 0) < MASTERY_MAX) return false;
-    return (rand || Math.random)() < (BOOK_DROP[result] || 0);
+    const p = result === 'win' && BOOK_DROP_BONUS[encounter] ? BOOK_DROP_BONUS[encounter] : (BOOK_DROP[result] || 0);
+    return (rand || Math.random)() < p;
   }
   // 技能書提升的經驗：剛好 +1 級，並保留目前這一級的進度比例
   function bookXp(xp) {
@@ -2647,7 +2653,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
       },
     };
   }
-  MWL.Books = { DROP: BOOK_DROP, MAX: BOOK_MAX, roll: rollBook, xpFor: bookXp, createStore: createBookStore };
+  MWL.Books = { DROP: BOOK_DROP, DROP_BONUS: BOOK_DROP_BONUS, MAX: BOOK_MAX, roll: rollBook, xpFor: bookXp, createStore: createBookStore };
 
   /* ------------------------------------------------------------------ *
    * Battle：本機模擬對戰
@@ -2895,30 +2901,47 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
   const NPC_NAMES = ['灰燼騎士', '迷途的冒險者', '酒館老闆娘', '北境獵人', '見習魔導士', '流浪劍客', '沉默的守門人',
     '貓耳盜賊', '退休勇者', '王都衛兵長', '森林德魯伊', '史萊姆愛好者', '吟遊詩人', '鐵匠學徒', '霧港船長', '占星少女'];
 
-  // 從多個候選中挑戰力接近玩家的對手；對手也有熟練度與強化等級，跟著玩家成長。rand 可傳入以便測試
+  // 遭遇類型：不刻意控制勝率，偶爾會遇到明顯較弱或較強的對手。
+  //   weak 弱敵 18%｜even 勢均力敵 55%｜strong 強敵 19%｜elite 精英 8%
+  //   power：對手戰力約為玩家的倍率範圍；lv / enh：熟練度與強化等級相對玩家的偏移範圍
+  const ENCOUNTERS = [
+    { id: 'weak',   name: '弱敵',     weight: 18, power: [0.6, 0.84],  lv: [-7, -1], enh: [-6, -2] },
+    { id: 'even',   name: '系統對手', weight: 55, power: [0.86, 1.14], lv: [-3, 3],  enh: [-3, 3] },
+    { id: 'strong', name: '強敵',     weight: 19, power: [1.16, 1.42], lv: [0, 5],   enh: [1, 5] },
+    { id: 'elite',  name: '精英對手', weight: 8,  power: [1.45, 1.85], lv: [2, 8],   enh: [3, 8] },
+  ];
+  function pickEncounter(rand) {
+    let r = rand() * 100;
+    for (const e of ENCOUNTERS) { r -= e.weight; if (r < 0) return e; }
+    return ENCOUNTERS[1];
+  }
+  // 從多個候選中挑戰力最接近「這次遭遇的目標戰力」的對手；對手的熟練度與強化等級依遭遇類型浮動。rand 可傳入以便測試
   function makeOpponent(playerWeapon, rand, streak) {
     rand = rand || Math.random;
+    const enc = pickEncounter(rand);
     // 連勝越多，對手越強（最多再強 25%），保持緊張感
     const ramp = Math.min(0.25, Math.max(0, streak | 0) * 0.025);
-    const target = playerWeapon.power * (0.85 + rand() * 0.3 + ramp);
+    const target = playerWeapon.power * (enc.power[0] + rand() * (enc.power[1] - enc.power[0]) + ramp);
     const pLv = (playerWeapon.mastery && playerWeapon.mastery.level) || 0;
     const pEnh = (playerWeapon.enh && playerWeapon.enh.level) || 0;
+    const span = (r) => r[0] + rand() * (r[1] - r[0]);
     let best = null;
     for (let i = 0; i < 16; i++) {
       const name = NPC_NAMES[Math.floor(rand() * NPC_NAMES.length)];
       const base = forgeFromSeed(Math.floor(rand() * 9007199254740991), name);
-      let lv = Math.max(0, Math.min(MASTERY_MAX, Math.round(pLv + (rand() * 6 - 3))));
-      // 玩家已強化：對手也帶著相近的強化等級（±3），有強化的對手熟練度必定是 Lv.20
+      let lv = clamp(Math.round(pLv + span(enc.lv)), 0, MASTERY_MAX);
+      // 玩家已強化：對手也帶著依遭遇類型浮動的強化等級；有強化的對手熟練度必定是 Lv.20
       let e = 0;
-      if (pEnh > 0) { e = clamp(Math.round(pEnh + (rand() * 6 - 3)), 0, ENH_MAX); if (e > 0) lv = MASTERY_MAX; }
+      if (pEnh > 0) { e = clamp(Math.round(pEnh + span(enc.enh)), 0, ENH_MAX); if (e > 0) lv = MASTERY_MAX; }
       const w = applyMastery(base, 0, lv, e);
       if (!best || Math.abs(w.power - target) < Math.abs(best.power - target)) best = w;
     }
     best.isNpc = true;
+    best.encounter = { id: enc.id, name: enc.name };
     return best;
   }
 
-  MWL.Opponents = { makeOpponent, NPC_NAMES };
+  MWL.Opponents = { makeOpponent, NPC_NAMES, ENCOUNTERS };
 
   /* ------------------------------------------------------------------ *
    * Storage：localStorage 安全包裝（隱私模式或被封鎖時自動退回記憶體）
@@ -4704,6 +4727,11 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     renderStreakBar();
   }
 
+  // 遭遇提示：弱敵、強敵、精英對手會特別標示
+  function encounterToast(o) {
+    const id = o.encounter && o.encounter.id;
+    return id === 'elite' ? `⚠️ 遭遇精英對手：${o.owner}！擊敗可得大量經驗` : id === 'strong' ? `遭遇強敵：${o.owner}` : id === 'weak' ? `對手看起來不太強：${o.owner}` : `新對手：${o.owner}`;
+  }
   function newOpponent() {
     if (state.playing) return;
     state.opponent = Opponents.makeOpponent(state.weapon, undefined, masteryStore.get(state.weapon.code).streak);
@@ -4783,7 +4811,8 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     fa.style.setProperty('--r-color', a.rarity.color);
     fb.style.setProperty('--r-color', b.rarity.color);
     fa.innerHTML = fighterHTML(a, '你', previewHp(a), previewHp(a));
-    fb.innerHTML = fighterHTML(b, b.isDaily ? '今日守關者' : '系統對手', previewHp(b), previewHp(b));
+    fb.innerHTML = fighterHTML(b, b.isDaily ? '今日守關者' : (b.encounter ? b.encounter.name : '系統對手'), previewHp(b), previewHp(b));
+    fb.dataset.enc = b.isDaily ? 'daily' : (b.encounter ? b.encounter.id : 'even');
   }
 
   function setHp(f, hp, maxHp, shield) {
@@ -4911,7 +4940,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     const streakBefore = masteryStore.get(me.code).streak;
     const xp = Mastery.battleXp(result, me.power, opp.power, streakBefore);
     // 技能書：出戰武器熟練度已滿級時，有機率掉落
-    const book = Books.roll(result, me.mastery.level);
+    const book = Books.roll(result, me.mastery.level, Math.random, opp.encounter && opp.encounter.id);
     if (book) bookStore.add(1);
     const lv = masteryStore.addBattle(me.code, result, xp);
     state.weapon = withMastery(state.base);
@@ -4950,7 +4979,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
   $('#btn-fight').addEventListener('click', startBattle);
   $('#btn-skip').addEventListener('click', () => { state.skip = true; });
   $('#btn-retry').addEventListener('click', () => { if (state.mustSwitch) return; state.battle = null; startBattle(); });
-  $('#btn-new-opp').addEventListener('click', () => { newOpponent(); toast(`新對手：${state.opponent.owner}`); });
+  $('#btn-new-opp').addEventListener('click', () => { newOpponent(); toast(encounterToast(state.opponent)); });
   $('#btn-back-card').addEventListener('click', () => show('result'));
 
   /* ---------------- 開房對戰 ---------------- */
