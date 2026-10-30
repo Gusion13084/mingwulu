@@ -3160,9 +3160,10 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
       <div class="seed-row"><span class="seed-code">${esc(cur.code)}</span></div>
       <div class="btn-row">
         <button class="btn btn-primary" type="button" id="btn-replace-yes">換成新武器</button>
-        <button class="btn" type="button" data-close>保留目前武器</button>
+        <button class="btn" type="button" id="btn-replace-no">保留目前武器</button>
       </div>`);
     $('#btn-replace-yes').addEventListener('click', () => { closeModal(); go(); });
+    $('#btn-replace-no').addEventListener('click', () => { closeModal(); show('result'); toast('已保留目前的武器'); });
   }
   // 讓排行榜列出目前持有的武器（不含真名）
   function publishCurrent() {
