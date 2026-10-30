@@ -599,6 +599,7 @@ button.mat:hover, button.mat:focus-visible { border-color: #ffe08a; outline: non
 .enh-mode:hover, .enh-mode:focus-visible { border-color: #7ad7ff; outline: none; box-shadow: 0 0 0 2px rgba(122, 215, 255, 0.35); }
 .enh-mode.curse { border-color: rgba(255, 110, 140, 0.6); background: linear-gradient(160deg, rgba(160, 40, 80, 0.28), rgba(60, 10, 40, 0.3)); }
 .enh-mode.curse:hover, .enh-mode.curse:focus-visible { border-color: #ff6e8c; box-shadow: 0 0 0 2px rgba(255, 110, 140, 0.35); }
+.enh-mode:disabled { opacity: 0.45; cursor: not-allowed; box-shadow: none; }
 .enh-mode-name { font-family: var(--f-display); font-weight: 900; font-size: 17px; }
 .enh-mode-rate { font-family: var(--f-latin); font-weight: 700; font-size: 26px; color: #7ad7ff; }
 .enh-mode.curse .enh-mode-rate { color: #ff8fa8; }
@@ -1515,14 +1516,16 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
    *  - 素材稀有度不得低於目標；素材不能是用種子碼繼承來的武器。
    *  - 兩種強化方式：
  *      一般強化：成功 +1 級；失敗 -1 級（不會毀損）。
- *      詛咒強化：成功 +2 級且成功率較高；失敗時 50% 武器毀損（沒毀損則等級不變）。
+ *      詛咒強化：隨時可用；成功 +2 級；成功率 = 一般 +15%，但最高 60%（一般 100% 時也只有 60%）；
+ *                失敗時 50% 武器毀損（沒毀損則等級不變）。
  *  - 連續失敗會累積「祝福」，提高下一次成功率；成功後歸零。
    *  - +20 覺醒第二技能，武器圖換成覺醒外觀。
    * ------------------------------------------------------------------ */
   const ENH_MAX = 20;
   // 索引 = 目前等級（嘗試升到下一級）
   const ENH_RATE = [1, 1, 0.95, 0.9, 0.85, 0.8, 0.76, 0.72, 0.68, 0.64, 0.6, 0.56, 0.52, 0.48, 0.45, 0.42, 0.39, 0.36, 0.33, 0.3];
-  const CURSE_BONUS = 0.15, CURSE_MAX = 0.95, CURSE_BREAK = 0.5; // 詛咒強化：成功率 +15%（最高 95%），失敗 50% 毀損
+  // 詛咒強化：隨時可用；成功率 = 一般成功率 +15%，但無論如何（含祝福疊加、即使一般為 100%）最高 60%；失敗 50% 毀損
+  const CURSE_BONUS = 0.15, CURSE_MAX = 0.6, CURSE_BREAK = 0.5;
   const ENH_PITY = 0.1, ENH_PITY_MAX = 0.5;   // 祝福：每次失敗 +10%，最多 +50%（成功後歸零）
   const ENH_TIER_BONUS = 0.05, ENH_TIER_MAX = 0.1; // 素材每高一階稀有度 +5%，最多 +10%
   const MAT_MIN_LV = 10;                           // 素材熟練度至少 Lv.10
@@ -1621,11 +1624,11 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     const tier = Math.min(ENH_TIER_MAX, Math.max(0, rarityGap | 0) * ENH_TIER_BONUS);
     const mat = round2(Math.max(0, Math.min(MASTERY_MAX, matLevel | 0) - MAT_MIN_LV) * MAT_LV_BONUS);
     const normal = Math.min(1, base + pity + tier + mat);
-    // 詛咒：一般成功率 +15%，最高 95%（一般已是 100% 時維持 100%，詛咒永遠不會比一般低）
-    const success = round2(curse ? Math.min(Math.max(CURSE_MAX, normal), normal + CURSE_BONUS) : normal);
+    const success = round2(curse ? Math.min(CURSE_MAX, normal + CURSE_BONUS) : normal);
     const breakOnFail = curse ? CURSE_BREAK : 0;
     return {
       mode: curse ? 'curse' : 'normal', success, breakOnFail, destroy: round2((1 - success) * breakOnFail),
+      normal: round2(normal),
       gain: curse ? Math.min(2, ENH_MAX - level) : 1, drop: curse || level === 0 ? 0 : 1,
       base, pity: round2(pity), tier: round2(tier), mat, curse: curse ? round2(success - Math.min(normal, success)) : 0,
     };
@@ -4246,12 +4249,12 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
           <span class="enh-mode-desc">成功 +${oc.gain} → +${E + oc.gain}<br>失敗 50% 武器毀損<br>（未毀損則等級不變）</span>
         </button>
       </div>
-      <p class="modal-hint">失敗會累積祝福，下次成功率 +${pct(Enhance.PITY)}（最多 +${pct(Enhance.PITY_MAX)}）。詛咒強化毀損時，目標武器會從武器庫消失，熟練度與強化全部歸零。</p>
+      <p class="modal-hint">失敗會累積祝福，下次成功率 +${pct(Enhance.PITY)}（最多 +${pct(Enhance.PITY_MAX)}）；詛咒強化含祝福最高 ${pct(Enhance.CURSE_MAX)}。詛咒強化毀損時，目標武器會從武器庫消失，熟練度與強化全部歸零。</p>
       ${m.w.enh && m.w.enh.level ? `<p class="modal-hint" style="color:var(--danger)">素材本身的 +${m.w.enh.level} 強化也會一起消失。</p>` : ''}
       <button class="btn" type="button" data-close>取消</button>`);
     $('#modal-box .enh-modes').addEventListener('click', (e) => {
       const b = e.target.closest('[data-mode]');
-      if (b) doEnhance(m, b.dataset.mode);
+      if (b && !b.disabled) doEnhance(m, b.dataset.mode);
     });
   }
   async function doEnhance(m, mode) {
