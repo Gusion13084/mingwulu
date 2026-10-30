@@ -594,6 +594,16 @@ button.mat:hover, button.mat:focus-visible { border-color: #ffe08a; outline: non
 .enh-out.success { color: #ffe08a; } .enh-out.fail { color: var(--muted); } .enh-out.break { color: var(--danger); }
 .enh-roll.spin .art { animation: enhShake 0.18s linear infinite; }
 @keyframes enhShake { 25% { transform: rotate(-2deg) scale(1.02); } 75% { transform: rotate(2deg) scale(1.02); } }
+.enh-modes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.enh-mode { display: grid; gap: 4px; justify-items: center; text-align: center; padding: 12px 8px; border-radius: 12px; border: 1px solid rgba(122, 215, 255, 0.5); background: rgba(122, 215, 255, 0.08); color: var(--fg); font: inherit; cursor: pointer; min-height: 120px; }
+.enh-mode:hover, .enh-mode:focus-visible { border-color: #7ad7ff; outline: none; box-shadow: 0 0 0 2px rgba(122, 215, 255, 0.35); }
+.enh-mode.curse { border-color: rgba(255, 110, 140, 0.6); background: linear-gradient(160deg, rgba(160, 40, 80, 0.28), rgba(60, 10, 40, 0.3)); }
+.enh-mode.curse:hover, .enh-mode.curse:focus-visible { border-color: #ff6e8c; box-shadow: 0 0 0 2px rgba(255, 110, 140, 0.35); }
+.enh-mode-name { font-family: var(--f-display); font-weight: 900; font-size: 17px; }
+.enh-mode-rate { font-family: var(--f-latin); font-weight: 700; font-size: 26px; color: #7ad7ff; }
+.enh-mode.curse .enh-mode-rate { color: #ff8fa8; }
+.enh-mode-desc { font-size: 12px; color: var(--muted); line-height: 1.5; }
+.enh-roll.cursed .art { box-shadow: 0 0 40px -6px #ff4f7a; border-color: rgba(255, 79, 122, 0.6); }
 .lib-enh { font-family: var(--f-latin); color: #ffe08a; font-weight: 700; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
@@ -1231,7 +1241,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
       case 'multi':  return head + `連續攻擊 ${s.hits} 次，每次 ${pct(s.mult)} 攻擊力。`;
       case 'pierce': return head + `無視對手 ${pct(s.pierce)} 防禦，造成 ${pct(s.mult)} 攻擊力傷害。`;
       case 'drain':  return head + `造成 ${pct(s.mult)} 攻擊力傷害，並回復傷害量 ${pct(s.heal)} 的生命。`;
-      case 'guard':  return head + `展開等同防禦 ${pct(s.shield)} 的護盾，並反擊 ${pct(s.mult)} 攻擊力。`;
+      case 'guard':  return head + `展開等同防禦 ${pct(s.shield)} 的護盾${s.stackCap ? '（可累積，最多 1.6 倍）' : ''}，並反擊 ${pct(s.mult)} 攻擊力。`;
       case 'stun':   return head + `造成 ${pct(s.mult)} 攻擊力傷害，使對手下一回合無法行動。`;
       case 'focus':  return head + `必定暴擊，造成 ${pct(s.mult)} 攻擊力的暴擊傷害。`;
       case 'bleed':  return head + `造成 ${pct(s.mult)} 攻擊力傷害，並使對手流血 3 回合，每回合損失該次傷害的 ${pct(s.bleed)}。`;
@@ -1459,12 +1469,14 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
       dmgBonus: round2(level * MASTERY_DMG_PER_LV), chanceBonus: round2(level * MASTERY_CHANCE_PER_LV),
     };
   }
+  const SHIELD_RATIO = 0.85;
   function masterSkill(base, info, chanceShare) {
     const k = 1 + info.dmgBonus;
     const sk = Object.assign({}, base);
     sk.chance = round2(clamp(base.chance + info.chanceBonus * chanceShare, 0, 0.6));
     if (sk.mult != null) sk.mult = round2(base.mult * k);
-    if (sk.shield != null) sk.shield = round2(base.shield * k);
+    // 護盾：實際護盾量為生成數值的 85%（2026-10 平衡調整），再乘上熟練度加成
+    if (sk.shield != null) { sk.shield = round2(base.shield * SHIELD_RATIO * k); sk.stackCap = true; }
     sk.desc = describeSkill(sk);
     return sk;
   }
@@ -1501,16 +1513,17 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
    * Enhance：武器強化（+1 ～ +20）
    *  - 目標武器熟練度滿級（Lv.20），消耗另一把熟練度 Lv.10 以上的武器當素材（素材熟練度越高成功率越高）。
    *  - 素材稀有度不得低於目標；素材不能是用種子碼繼承來的武器。
-   *  - 成功：依武器類型提升四圍；失敗：等級不變，+11 起有機率毀損。
-   *  - 連續失敗會累積「祝福」，提高下一次成功率；成功後歸零。
+   *  - 兩種強化方式：
+ *      一般強化：成功 +1 級；失敗 -1 級（不會毀損）。
+ *      詛咒強化：成功 +2 級且成功率較高；失敗時 50% 武器毀損（沒毀損則等級不變）。
+ *  - 連續失敗會累積「祝福」，提高下一次成功率；成功後歸零。
    *  - +20 覺醒第二技能，武器圖換成覺醒外觀。
    * ------------------------------------------------------------------ */
   const ENH_MAX = 20;
   // 索引 = 目前等級（嘗試升到下一級）
   const ENH_RATE = [1, 1, 0.95, 0.9, 0.85, 0.8, 0.76, 0.72, 0.68, 0.64, 0.6, 0.56, 0.52, 0.48, 0.45, 0.42, 0.39, 0.36, 0.33, 0.3];
-  // 失敗時武器毀損的機率（+10 以下失敗不會毀損；再乘上品質倍率）
-  const ENH_BREAK = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.05, 0.06, 0.07, 0.08, 0.09, 0.1, 0.12, 0.14, 0.16, 0.18];
-  const ENH_PITY = 0.05, ENH_PITY_MAX = 0.25;   // 每次失敗 +5%，最多 +25%
+  const CURSE_BONUS = 0.15, CURSE_MAX = 0.95, CURSE_BREAK = 0.5; // 詛咒強化：成功率 +15%（最高 95%），失敗 50% 毀損
+  const ENH_PITY = 0.1, ENH_PITY_MAX = 0.5;   // 祝福：每次失敗 +10%，最多 +50%（成功後歸零）
   const ENH_TIER_BONUS = 0.05, ENH_TIER_MAX = 0.1; // 素材每高一階稀有度 +5%，最多 +10%
   const MAT_MIN_LV = 10;                           // 素材熟練度至少 Lv.10
   const MAT_LV_BONUS = 0.01;                       // 素材熟練度超過 Lv.10 的每一級 +1%（Lv.20 = +10%）
@@ -1538,14 +1551,14 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
   };
   // 品質決定強化難度與成長幅度：低品質好強化、每級成長多；高品質難強化、毀損率高、每級成長少。
   // 讓低品質武器能靠努力追上高品質武器，並在 +20 覺醒時「突破」品質上限。
-  //   rate：成功率倍率｜brk：毀損率倍率｜grow：每級數值成長倍率
+  //   rate：成功率倍率｜grow：每級數值成長倍率
   const ENH_BY_RARITY = [
-    { rate: 1.3,  brk: 0.4, grow: 4.1 },  // 普通（+20 約可與神話 +10 打平）
-    { rate: 1.15, brk: 0.7, grow: 3.4 },  // 優良
-    { rate: 1.0,  brk: 1.0, grow: 2.7 },  // 稀有
-    { rate: 0.82, brk: 1.4, grow: 2.0 },  // 史詩
-    { rate: 0.7,  brk: 1.7, grow: 1.4 },  // 傳說
-    { rate: 0.6,  brk: 2.0, grow: 0.9 },  // 神話
+    { rate: 1.3,  grow: 4.1 },  // 普通（+20 約可與神話 +10 打平）
+    { rate: 1.15, grow: 3.4 },  // 優良
+    { rate: 1.0,  grow: 2.7 },  // 稀有
+    { rate: 0.82, grow: 2.0 },  // 史詩
+    { rate: 0.7,  grow: 1.4 },  // 傳說
+    { rate: 0.6,  grow: 0.9 },  // 神話
   ];
   const AWAKEN_FLOOR = 4; // 覺醒突破：第二技能至少以「傳說」品質計算
   const ENH_TIERS = [[20, '覺醒'], [15, '極'], [10, '真'], [5, '精'], [1, '鍛'], [0, '']];
@@ -1597,18 +1610,25 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
   }
 
   // 本次強化的成功率與毀損率
-  // rarityIndex：目標武器的品質（0 普通 ～ 5 神話）
-  function enhanceOdds(level, fails, rarityGap, rarityIndex, matLevel) {
+  // rarityIndex：目標武器的品質（0 普通 ～ 5 神話）；matLevel：素材熟練度；mode：'normal' 一般 | 'curse' 詛咒
+  function enhanceOdds(level, fails, rarityGap, rarityIndex, matLevel, mode) {
     level = clamp(level | 0, 0, ENH_MAX);
-    if (level >= ENH_MAX) return { success: 0, breakOnFail: 0, destroy: 0, base: 0, pity: 0, tier: 0 };
+    const curse = mode === 'curse';
+    if (level >= ENH_MAX) return { mode: curse ? 'curse' : 'normal', success: 0, breakOnFail: 0, destroy: 0, gain: 0, drop: 0, base: 0, pity: 0, tier: 0, mat: 0, curse: 0 };
     const R = ENH_BY_RARITY[clamp(rarityIndex | 0, 0, 5)];
     const base = round2(Math.min(1, ENH_RATE[level] * R.rate));
     const pity = Math.min(ENH_PITY_MAX, Math.max(0, fails | 0) * ENH_PITY);
     const tier = Math.min(ENH_TIER_MAX, Math.max(0, rarityGap | 0) * ENH_TIER_BONUS);
     const mat = round2(Math.max(0, Math.min(MASTERY_MAX, matLevel | 0) - MAT_MIN_LV) * MAT_LV_BONUS);
-    const success = round2(Math.min(1, base + pity + tier + mat));
-    const breakOnFail = round2(Math.min(0.6, ENH_BREAK[level] * R.brk));
-    return { success, breakOnFail, destroy: round2((1 - success) * breakOnFail), base, pity: round2(pity), tier: round2(tier), mat };
+    const normal = Math.min(1, base + pity + tier + mat);
+    // 詛咒：一般成功率 +15%，最高 95%（一般已是 100% 時維持 100%，詛咒永遠不會比一般低）
+    const success = round2(curse ? Math.min(Math.max(CURSE_MAX, normal), normal + CURSE_BONUS) : normal);
+    const breakOnFail = curse ? CURSE_BREAK : 0;
+    return {
+      mode: curse ? 'curse' : 'normal', success, breakOnFail, destroy: round2((1 - success) * breakOnFail),
+      gain: curse ? Math.min(2, ENH_MAX - level) : 1, drop: curse || level === 0 ? 0 : 1,
+      base, pity: round2(pity), tier: round2(tier), mat, curse: curse ? round2(success - Math.min(normal, success)) : 0,
+    };
   }
   // 擲骰：rand 可傳入以便測試；回傳 'success' | 'fail' | 'break'
   function rollEnhance(odds, rand) {
@@ -1652,20 +1672,20 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
 
   // 一次完整的強化：驗證 → 消耗素材 → 擲骰 → 寫入結果（結果在擲骰當下就保存，重新整理也無法反悔）
   // deps: { enhStore, masteryStore, collection }；target/material 為套用熟練度與強化後的武器
-  function performEnhance(deps, target, material, rand) {
+  function performEnhance(deps, target, material, rand, mode) {
     const chk = checkMaterial(target, material);
     if (!chk.ok || !material) return { ok: false, code: chk.code || 'no_material', reason: chk.reason || '請選擇素材武器。' };
     const rec = deps.enhStore.get(target.code);
     const from = rec.lv;
-    const odds = enhanceOdds(from, rec.fails, chk.gap, target.rarity.index, material.mastery.level);
+    const odds = enhanceOdds(from, rec.fails, chk.gap, target.rarity.index, material.mastery.level, mode);
     const outcome = rollEnhance(odds, rand);
     // 素材一律消耗：從武器庫移除，熟練度與強化歸零
     deps.collection.remove(material.code);
     deps.masteryStore.reset(material.code);
     deps.enhStore.clear(material.code);
     let to = from;
-    if (outcome === 'success') { to = from + 1; deps.enhStore.set(target.code, { lv: to, fails: 0, best: rec.best }); }
-    else if (outcome === 'fail') deps.enhStore.set(target.code, { lv: from, fails: rec.fails + 1, best: rec.best });
+    if (outcome === 'success') { to = Math.min(ENH_MAX, from + odds.gain); deps.enhStore.set(target.code, { lv: to, fails: 0, best: rec.best }); }
+    else if (outcome === 'fail') { to = Math.max(0, from - odds.drop); deps.enhStore.set(target.code, { lv: to, fails: rec.fails + 1, best: rec.best }); }
     else {
       // 毀損：目標武器消失（從武器庫移除，熟練度與強化歸零）
       deps.collection.remove(target.code);
@@ -1673,11 +1693,11 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
       deps.enhStore.clear(target.code);
       to = 0;
     }
-    return { ok: true, outcome, from, to, odds, awakened: outcome === 'success' && to >= ENH_MAX, material: material.code };
+    return { ok: true, outcome, mode: odds.mode, from, to, odds, awakened: outcome === 'success' && to >= ENH_MAX, material: material.code };
   }
 
   MWL.Enhance = {
-    MAX: ENH_MAX, RATE: ENH_RATE, BREAK: ENH_BREAK, PITY: ENH_PITY, PITY_MAX: ENH_PITY_MAX, TIER_BONUS: ENH_TIER_BONUS, GROWTH, REASONS: ENH_REASONS,
+    MAX: ENH_MAX, RATE: ENH_RATE, CURSE_BONUS, CURSE_MAX, CURSE_BREAK, PITY: ENH_PITY, PITY_MAX: ENH_PITY_MAX, TIER_BONUS: ENH_TIER_BONUS, GROWTH, REASONS: ENH_REASONS,
     BY_RARITY: ENH_BY_RARITY, AWAKEN_FLOOR, MAT_MIN_LV, MAT_LV_BONUS,
     info: enhanceInfo, apply: applyEnhance, delta: enhanceDelta, odds: enhanceOdds, roll: rollEnhance, checkMaterial, awakenSkill,
     createStore: createEnhanceStore, perform: performEnhance,
@@ -2589,6 +2609,8 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
    * 勝負由攻擊、防禦、速度、暴擊與技能共同決定，並含有可重現的隨機性。
    * ------------------------------------------------------------------ */
   const MAX_ROUNDS = 15;
+  const SHIELD_STACK = 1.6;   // 護盾可累積，總量上限為單次護盾的 1.6 倍
+  const PIERCE_SHIELD = 0.5;  // 破甲技能先擊碎對手 50% 護盾；碎甲技能擊碎全部護盾；流血為真實傷害（無視護盾）
   const sane = (v, lo, hi) => (Number.isFinite(+v) ? clamp(+v, lo, hi) : lo);
 
   function makeFighter(w, side) {
@@ -2676,6 +2698,13 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     return h;
   }
   const refl = (h) => (h.reflected ? `（被反震 ${h.reflected}）` : '');
+  // 破盾：直接移除對手一定比例的護盾（對手沒有護盾時不影響任何結果）
+  function breakShield(t, ratio) {
+    if (!(t.shield > 0)) return 0;
+    const cut = Math.round(t.shield * ratio);
+    t.shield -= cut;
+    return cut;
+  }
 
   function act(rng, a, t, round, push) {
     // 第一技能 → 覺醒技能 → 普通攻擊；被封印時這次出手不能發動技能
@@ -2704,8 +2733,9 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
         return push(Object.assign(base, { dmg: total, text: say(`連擊 ${sk.hits} 次，共造成 ${total} 傷害！${back ? `（被反震 ${back}）` : ''}`) }));
       }
       case 'pierce': {
+        const cut = breakShield(t, PIERCE_SHIELD);
         const h = hit(a, t, damage(rng, a, t, sk.mult || 1.3, sk.pierce || 0.5));
-        return push(Object.assign(base, { dmg: h.real, text: say(`貫穿護甲，造成 ${h.real} 傷害！${refl(h)}`) }));
+        return push(Object.assign(base, { dmg: h.real, text: say(`${cut ? `擊碎 ${cut} 護盾並` : ''}貫穿護甲，造成 ${h.real} 傷害！${refl(h)}`) }));
       }
       case 'drain': {
         const h = hit(a, t, damage(rng, a, t, sk.mult || 1.3));
@@ -2714,7 +2744,9 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
         return push(Object.assign(base, { dmg: h.real, heal, text: say(`造成 ${h.real} 傷害，回復 ${heal} 生命。${refl(h)}`) }));
       }
       case 'guard': {
-        const shield = Math.round(a.st.def * (sk.shield || 1.3));
+        // 護盾可以累積，但總量最多為單次護盾的 SHIELD_STACK 倍
+        const one = Math.round(a.st.def * (sk.shield || 1.3));
+        const shield = Math.max(0, Math.min(one, Math.round(one * SHIELD_STACK) - a.shield));
         a.shield += shield;
         const h = hit(a, t, damage(rng, a, t, sk.mult || 0.8));
         return push(Object.assign(base, { dmg: h.real, shieldGain: shield, text: say(`獲得 ${shield} 護盾，並反擊 ${h.real} 傷害。${refl(h)}`) }));
@@ -2745,6 +2777,8 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
         return push(Object.assign(base, { dmg: h.real, text: say(`${miss >= 0.5 ? '趁對手虛弱一擊斬殺' : '揮出致命一擊'}，造成 ${h.real} 傷害！${refl(h)}`) }));
       }
       case 'sunder': {
+        const cut = breakShield(t, 1);
+        if (cut) base.shieldBreak = cut;
         const h = hit(a, t, damage(rng, a, t, sk.mult || 1.2));
         t.defDown = Math.min(0.6, (t.defDown || 0) + (sk.sunder || 0.15));
         return push(Object.assign(base, { dmg: h.real, text: say(`造成 ${h.real} 傷害，${t.name} 防禦下降至 ${Math.round((1 - t.defDown) * 100)}%。${refl(h)}`) }));
@@ -4140,19 +4174,21 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
       box.innerHTML = head + `<p class="enh-note">已強化到 +20，覺醒第二技能「${esc(w.skill2 ? w.skill2.name : '')}」，武器圖也換成覺醒外觀。</p>`;
       return;
     }
-    const odds = Enhance.odds(E, rec.fails, 0, w.rarity.index);
+    const on = Enhance.odds(E, rec.fails, 0, w.rarity.index, 0, 'normal');
+    const oc = Enhance.odds(E, rec.fails, 0, w.rarity.index, 0, 'curse');
     const d = Enhance.delta(w, E);
     const ready = w.mastery.level >= Mastery.MAX;
     const mats = ready ? materialCandidates().filter((m) => m.chk.ok) : [];
     const gain = [['攻', d.atk], ['防', d.def], ['速', d.spd], ['暴', d.crit]].filter(([, v]) => v > 0).map(([k, v]) => `${k} +${v}`).join('・') || '數值微幅提升';
     const note = !ready ? `熟練度達 Lv.${Mastery.MAX} 才能強化（目前 Lv.${w.mastery.level}）。多打幾場對戰吧！`
       : !mats.length ? `需要另一把熟練度 Lv.${Enhance.MAT_MIN_LV} 以上、稀有度不低於「${w.rarity.name}」、由名字鑄造的武器當素材（繼承的武器不行）。用「再次生成」多鑄幾把來練吧。`
-        : `有 ${mats.length} 把武器可當素材。素材會被消耗；素材熟練度每高於 Lv.${Enhance.MAT_MIN_LV} 一級，成功率 +${Math.round(Enhance.MAT_LV_BONUS * 100)}%；素材稀有度每高一階，再 +${Math.round(Enhance.TIER_BONUS * 100)}%。`;
+        : `有 ${mats.length} 把武器可當素材（上方為基本成功率）。素材會被消耗；素材熟練度每高於 Lv.${Enhance.MAT_MIN_LV} 一級，成功率 +${Math.round(Enhance.MAT_LV_BONUS * 100)}%；素材稀有度每高一階，再 +${Math.round(Enhance.TIER_BONUS * 100)}%。`;
     box.innerHTML = head + `
       <div class="enh-rows">
-        <div><span>強化到 +${E + 1} 基本成功率</span><strong>${pct(odds.success)}${odds.pity ? `（含祝福 +${pct(odds.pity)}）` : ''}</strong></div>
-        <div><span>失敗時毀損機率</span><strong class="${odds.breakOnFail ? 'risk' : ''}">${odds.breakOnFail ? pct(odds.breakOnFail) : '不會毀損'}</strong></div>
-        <div><span>成功後提升</span><strong>${gain}${E + 1 >= MAX ? '・覺醒第二技能' : ''}</strong></div>
+        <div><span>一般強化（成功 +1／失敗 -1）</span><strong>${pct(on.success)}</strong></div>
+        <div><span>詛咒強化（成功 +${oc.gain}／失敗 50% 毀損）</span><strong class="risk">${pct(oc.success)}</strong></div>
+        ${on.pity ? `<div><span>祝福加成（已含）</span><strong>+${pct(on.pity)}</strong></div>` : ''}
+        <div><span>每升一級提升</span><strong>${gain}${E + oc.gain >= MAX ? '・+20 覺醒第二技能' : ''}</strong></div>
       </div>
       <button class="btn btn-primary" type="button" id="btn-enhance" ${ready && mats.length ? '' : 'disabled'}>選擇強化素材</button>
       <p class="enh-note">${note}</p>`;
@@ -4187,33 +4223,44 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
   function confirmEnhance(code) {
     const m = materialCandidates().find((c) => c.x.code === code);
     if (!m || !m.chk.ok) { toast('這把武器不能當素材'); return; }
-    const w = state.weapon, rec = enhStore.get(w.code);
-    const odds = Enhance.odds(rec.lv, rec.fails, m.chk.gap, w.rarity.index, m.w.mastery.level);
-    const extra = [odds.mat ? `素材熟練 +${pct(odds.mat)}` : '', odds.tier ? `素材品質 +${pct(odds.tier)}` : '', odds.pity ? `祝福 +${pct(odds.pity)}` : ''].filter(Boolean).join('・');
+    const w = state.weapon, rec = enhStore.get(w.code), E = rec.lv;
+    const on = Enhance.odds(E, rec.fails, m.chk.gap, w.rarity.index, m.w.mastery.level, 'normal');
+    const oc = Enhance.odds(E, rec.fails, m.chk.gap, w.rarity.index, m.w.mastery.level, 'curse');
+    const extra = [on.mat ? `素材熟練 +${pct(on.mat)}` : '', on.tier ? `素材品質 +${pct(on.tier)}` : '', on.pity ? `祝福 +${pct(on.pity)}` : ''].filter(Boolean).join('・');
     openModal(`
-      <h3 id="modal-title">確認強化 +${rec.lv} → +${rec.lv + 1}</h3>
+      <h3 id="modal-title">選擇強化方式（目前 +${E}）</h3>
       <div class="enh-rows">
         <div><span>目標</span><strong>${esc(w.name)}${plus(w)}</strong></div>
         <div><span>素材（會消失）</span><strong>${esc(m.w.name)}${plus(m.w)}・${esc(m.w.rarity.name)}</strong></div>
-        <div><span>成功率</span><strong>${pct(odds.success)}${extra ? `（${extra}）` : ''}</strong></div>
-        <div><span>失敗</span><strong>強化等級不變，下次成功率 +${pct(Enhance.PITY)}</strong></div>
-        <div><span>失敗時毀損</span><strong class="${odds.breakOnFail ? 'risk' : ''}">${odds.breakOnFail ? `${pct(odds.breakOnFail)}（整體約 ${pct(odds.destroy)}）` : '不會毀損'}</strong></div>
+        ${extra ? `<div><span>成功率加成</span><strong>${extra}</strong></div>` : ''}
       </div>
-      ${odds.breakOnFail ? '<p class="modal-hint" style="color:var(--danger)">毀損時目標武器會從武器庫消失，熟練度與強化全部歸零。</p>' : ''}
+      <div class="enh-modes">
+        <button class="enh-mode" type="button" data-mode="normal">
+          <span class="enh-mode-name">一般強化</span>
+          <span class="enh-mode-rate">${pct(on.success)}</span>
+          <span class="enh-mode-desc">成功 +1 → +${E + 1}<br>失敗 ${on.drop ? `-1 → +${E - 1}` : '等級不變'}<br>不會毀損</span>
+        </button>
+        <button class="enh-mode curse" type="button" data-mode="curse">
+          <span class="enh-mode-name">詛咒強化</span>
+          <span class="enh-mode-rate">${pct(oc.success)}</span>
+          <span class="enh-mode-desc">成功 +${oc.gain} → +${E + oc.gain}<br>失敗 50% 武器毀損<br>（未毀損則等級不變）</span>
+        </button>
+      </div>
+      <p class="modal-hint">失敗會累積祝福，下次成功率 +${pct(Enhance.PITY)}（最多 +${pct(Enhance.PITY_MAX)}）。詛咒強化毀損時，目標武器會從武器庫消失，熟練度與強化全部歸零。</p>
       ${m.w.enh && m.w.enh.level ? `<p class="modal-hint" style="color:var(--danger)">素材本身的 +${m.w.enh.level} 強化也會一起消失。</p>` : ''}
-      <div class="btn-row">
-        <button class="btn btn-primary" type="button" id="btn-enh-go">開始強化</button>
-        <button class="btn" type="button" data-close>取消</button>
-      </div>`);
-    $('#btn-enh-go').addEventListener('click', () => doEnhance(m));
+      <button class="btn" type="button" data-close>取消</button>`);
+    $('#modal-box .enh-modes').addEventListener('click', (e) => {
+      const b = e.target.closest('[data-mode]');
+      if (b) doEnhance(m, b.dataset.mode);
+    });
   }
-  async function doEnhance(m) {
+  async function doEnhance(m, mode) {
     if (state.playing || room.playing) return;
     const before = state.weapon;
-    const res = Enhance.perform({ enhStore, masteryStore, collection }, before, m.w, Math.random);
+    const res = Enhance.perform({ enhStore, masteryStore, collection }, before, m.w, Math.random, mode);
     if (!res.ok) { closeModal(); toast(res.reason); return; }
     // 結果已在擲骰當下保存；以下只是演出
-    $('#modal-box').innerHTML = `<div class="enh-roll ${reduceMotion ? '' : 'spin'}" id="enh-roll"><div class="art">${Art.renderWeaponSVG(before, { idPrefix: 'roll' })}</div><div class="enh-out">強化中…</div></div>`;
+    $('#modal-box').innerHTML = `<div class="enh-roll ${reduceMotion ? '' : 'spin'} ${res.mode === 'curse' ? 'cursed' : ''}" id="enh-roll"><div class="art">${Art.renderWeaponSVG(before, { idPrefix: 'roll' })}</div><div class="enh-out">${res.mode === 'curse' ? '詛咒強化中…' : '強化中…'}</div></div>`;
     if (!reduceMotion) await sleep(1100);
     const fresh = profile.update((p) => {
       p.enhTries++;
@@ -4222,7 +4269,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     });
     let html;
     if (res.outcome === 'break') {
-      html = `<div class="enh-roll"><div class="enh-out break">武器毀損</div><p class="modal-hint">「${esc(before.name)}」在強化 +${res.from + 1} 時碎裂，已從武器庫消失。</p></div>`;
+      html = `<div class="enh-roll"><div class="enh-out break">詛咒反噬・武器毀損</div><p class="modal-hint">「${esc(before.name)}」在 +${res.from} 的詛咒強化中碎裂，已從武器庫消失。</p></div>`;
       afterBreak();
     } else {
       state.weapon = grown(state.base);
@@ -4230,9 +4277,9 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
       const w = state.weapon;
       html = res.outcome === 'success'
         ? `<div class="enh-roll"><div class="art">${Art.renderWeaponSVG(w, { idPrefix: 'rollok' })}</div>
-            <div class="enh-out success">${res.awakened ? '覺醒！+20' : `強化成功 +${res.to}`}</div>
+            <div class="enh-out success">${res.awakened ? '覺醒！+20' : `${res.mode === 'curse' ? '詛咒強化成功' : '強化成功'} +${res.from} → +${res.to}`}</div>
             <p class="modal-hint">${res.awakened ? `覺醒第二技能「${esc(w.skill2.name)}」：${esc(w.skill2.desc)}` : `戰力 ${before.power} → ${w.power}`}</p></div>`
-        : `<div class="enh-roll"><div class="enh-out fail">強化失敗</div><p class="modal-hint">武器沒有受損，仍為 +${res.from}。累積祝福，下次成功率 ${pct(Enhance.odds(res.from, enhStore.get(w.code).fails, 0, w.rarity.index).success)}。</p></div>`;
+        : `<div class="enh-roll"><div class="enh-out fail">強化失敗</div><p class="modal-hint">${res.to < res.from ? `強化等級下降：+${res.from} → +${res.to}。` : `武器沒有毀損，仍為 +${res.to}。`}累積祝福，下次一般強化基本成功率 ${pct(Enhance.odds(res.to, enhStore.get(w.code).fails, 0, w.rarity.index, 0, 'normal').success)}。</p></div>`;
     }
     $('#modal-box').innerHTML = `<h3 id="modal-title" class="sr-only">強化結果</h3>${html}<button class="btn" type="button" data-close>${res.outcome === 'break' ? '知道了' : '繼續'}</button>`;
     const btn = $('#modal-box [data-close]'); if (btn) btn.focus();
