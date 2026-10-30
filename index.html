@@ -529,6 +529,20 @@ body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-a
 .achv-item:not(.on) strong { color: var(--muted); }
 .share-inline { display: inline-flex; margin-top: 8px; min-height: 40px; padding: 0 14px; border-radius: 10px; align-items: center; font-family: var(--f-body); font-size: 14px; font-weight: 700; letter-spacing: 0; background: rgba(90, 168, 255, 0.14); color: #dbe9ff; border: 1px solid rgba(90, 168, 255, 0.55); }
 
+/* ---------- 武器庫 ---------- */
+.library { display: grid; gap: 10px; margin-top: 6px; }
+.lib-grid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.lib-item { --r-color: var(--line); display: grid; gap: 6px; padding: 8px 8px 10px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line-soft); border-top: 2px solid var(--r-color); min-width: 0; }
+.lib-item.on { border-color: var(--gold); box-shadow: 0 0 0 1px rgba(233, 196, 106, 0.4); }
+.lib-item svg { width: 100%; height: auto; border-radius: 8px; display: block; }
+.lib-name { font-size: 13px; font-weight: 700; line-height: 1.35; overflow-wrap: anywhere; }
+.lib-meta { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.lib-meta b { color: var(--r-color); font-weight: 700; }
+.lib-actions { display: flex; gap: 6px; }
+.lib-actions .btn { min-height: 40px; padding: 0 10px; font-size: 14px; flex: 1; }
+.lib-actions .btn-del { flex: 0 0 auto; color: var(--muted); }
+.lib-on { display: grid; place-items: center; min-height: 40px; border-radius: 10px; font-size: 14px; font-weight: 700; color: var(--gold-ink); background: var(--gold); }
+@media (min-width: 720px) { .lib-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (min-width: 720px) {
   .wrap, .topbar-inner { max-width: 720px; }
   .result-layout { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr); gap: 20px; align-items: start; }
@@ -641,6 +655,11 @@ body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-a
           <button class="btn btn-ghost" type="button" id="btn-rename">重新輸入名稱</button>
         </div>
         <p class="fineprint" id="reforge-note"></p>
+        <section class="library" aria-labelledby="library-title">
+          <div class="samples-head"><h2 id="library-title">我的武器庫</h2><span id="library-count"></span></div>
+          <p class="field-hint">抽過、繼承過的武器都會自動收進來。每把武器的熟練度與連勝各自保留，換回來不會歸零。</p>
+          <ul class="lib-grid" id="library-grid"></ul>
+        </section>
       </div>
     </div>
   </section>
@@ -2437,14 +2456,29 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     },
 
     // 收藏：只存種子碼，武器內容永遠可由種子重建（不保存真名）
+    // 武器庫：每把擁有過的武器（只存種子碼與鑄造來源，不存名字），最近使用的排前面
     createCollection(storage) {
+      const LIMIT = 60;
+      const read = () => {
+        const raw = storage.get('collection', []);
+        return (Array.isArray(raw) ? raw : []).map((x) => {
+          const d = decodeSeedCode(x && x.code);
+          if (!d.ok) return null;
+          const origin = x.origin && x.origin.kind === 'name' ? { kind: 'name', forge: Math.max(0, x.origin.forge | 0) } : { kind: 'seed' };
+          return { code: d.code, seed: d.seed, ver: d.ver, origin, at: x.at || 0 };
+        }).filter(Boolean);
+      };
+      const write = (list) => storage.set('collection', list.slice(0, LIMIT).map((x) => ({ code: x.code, origin: x.origin, at: x.at })));
       return {
-        list() { return storage.get('collection', []); },
+        LIMIT,
+        list: read,
+        get(code) { return read().find((x) => x.code === code) || null; },
         add(w) {
-          const list = storage.get('collection', []).filter((x) => x.code !== w.code);
-          list.unshift({ code: w.code, at: Date.now() });
-          storage.set('collection', list.slice(0, 50));
+          const list = read().filter((x) => x.code !== w.code);
+          list.unshift({ code: w.code, origin: w.origin && w.origin.kind === 'name' ? { kind: 'name', forge: w.origin.forge | 0 } : { kind: 'seed' }, at: Date.now() });
+          write(list);
         },
+        remove(code) { write(read().filter((x) => x.code !== code)); },
       };
     },
   };
@@ -3154,10 +3188,9 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     if (!state.base || state.base.code === base.code) { go(); return; }
     const cur = state.weapon;
     openModal(`
-      <h3 id="modal-title">要換掉目前的武器嗎？</h3>
-      <p class="modal-hint">目前持有：<strong>${esc(cur.name)}</strong>（${esc(cur.rarity.name)}・Lv.${cur.mastery.level}）</p>
-      <p class="modal-hint">換掉後，排行榜會改列新武器。舊武器的熟練度仍保存在它的種子碼上，之後輸入種子碼就能取回：</p>
-      <div class="seed-row"><span class="seed-code">${esc(cur.code)}</span></div>
+      <h3 id="modal-title">要換上新武器嗎？</h3>
+      <p class="modal-hint">目前裝備：<strong>${esc(cur.name)}</strong>（${esc(cur.rarity.name)}・Lv.${cur.mastery.level}）</p>
+      <p class="modal-hint">它會留在「我的武器庫」，熟練度與連勝都保留，隨時可以換回來。排行榜會改列你裝備中的武器。</p>
       <div class="btn-row">
         <button class="btn btn-primary" type="button" id="btn-replace-yes">換成新武器</button>
         <button class="btn" type="button" id="btn-replace-no">保留目前武器</button>
@@ -3196,6 +3229,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     state.mustSwitch = false;
     collection.add(base);
     holding.set(base);
+    renderLibrary();
     publishCurrent();
     celebrate(profile.update((p) => { p.forged = collection.list().length; if (base.rarity.id === 'mythic') p.mythic = 1; }));
     const w = state.weapon;
@@ -3342,6 +3376,49 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
       document.querySelectorAll('#weapon-card .bar span').forEach((s) => { s.style.setProperty('--w', s.dataset.w); s.style.width = s.dataset.w; });
     });
   }
+
+  /* ---------------- 武器庫 ---------------- */
+  function renderLibrary() {
+    const grid = $('#library-grid');
+    if (!grid) return;
+    const list = collection.list();
+    const cur = state.base && state.base.code;
+    list.sort((a, b) => (b.code === cur) - (a.code === cur));
+    $('#library-count').textContent = `${list.length} 把${list.length >= collection.LIMIT ? '（已滿，最舊的會被移出）' : ''}`;
+    grid.innerHTML = list.map((x) => {
+      const w = Mastery.applyMastery(Forge.forgeFromSeed(x.seed, holderName(''), x.ver), masteryStore.get(x.code).xp);
+      const rec = masteryStore.get(x.code);
+      const on = x.code === cur;
+      return `<li class="lib-item ${on ? 'on' : ''}" style="--r-color:${w.rarity.color}">
+        ${Art.renderWeaponSVG(w, { idPrefix: 'lib' + x.code.replace(/-/g, '').slice(-6), size: 140 })}
+        <span class="lib-name">${esc(w.name)}</span>
+        <span class="lib-meta"><b>${esc(w.rarity.name)}</b>・Lv.${w.mastery.level}・戰力 ${w.power}${rec.bestStreak ? `・最高 ${rec.bestStreak} 連勝` : ''}</span>
+        ${on ? '<span class="lib-on">裝備中</span>' : `<div class="lib-actions"><button class="btn" type="button" data-equip="${esc(x.code)}">裝備</button><button class="btn btn-ghost btn-del" type="button" data-del="${esc(x.code)}" aria-label="從武器庫移除 ${esc(w.name)}">移除</button></div>`}
+      </li>`;
+    }).join('');
+  }
+  $('#library-grid').addEventListener('click', (e) => {
+    const eq = e.target.closest('[data-equip]');
+    if (eq) {
+      if (state.playing || room.playing) { toast('戰鬥中不能更換武器'); return; }
+      const x = collection.get(eq.dataset.equip);
+      if (!x) return;
+      const base = Forge.forgeFromSeed(x.seed, holderName(''), x.ver);
+      base.origin = x.origin;
+      state.sourceName = '';
+      present(base, { quiet: true });
+      if (room.conn) pushMyState();
+      toast(`已裝備「${base.name}」`);
+      return;
+    }
+    const del = e.target.closest('[data-del]');
+    if (del) {
+      // 點兩下才移除，避免誤觸；熟練度仍保存在種子碼上
+      if (del.dataset.armed) { collection.remove(del.dataset.del); renderLibrary(); toast('已從武器庫移除（輸入種子碼可再取回）'); return; }
+      del.dataset.armed = '1'; del.textContent = '確定？';
+      setTimeout(() => { if (del.isConnected) { delete del.dataset.armed; del.textContent = '移除'; } }, 3000);
+    }
+  });
 
   function copySeed() { if (state.weapon) copyText(state.weapon.code, `已複製種子碼 ${state.weapon.code}`, '複製種子碼'); }
   $('#btn-copy-seed').addEventListener('click', copySeed);
