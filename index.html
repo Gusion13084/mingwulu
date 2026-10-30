@@ -605,6 +605,9 @@ button.mat:hover, button.mat:focus-visible { border-color: #ffe08a; outline: non
 .enh-mode.curse .enh-mode-rate { color: #ff8fa8; }
 .enh-mode-desc { font-size: 12px; color: var(--muted); line-height: 1.5; }
 .enh-roll.cursed .art { box-shadow: 0 0 40px -6px #ff4f7a; border-color: rgba(255, 79, 122, 0.6); }
+.book-bar { margin: 0; padding: 8px 12px; border-radius: 10px; font-size: 13px; color: var(--muted); background: rgba(233, 196, 106, 0.08); border: 1px solid rgba(233, 196, 106, 0.3); }
+.book-bar strong { color: var(--gold); }
+.btn-book { min-height: 38px; padding: 0 8px; font-size: 13px; border-color: rgba(233, 196, 106, 0.55); color: var(--gold); }
 .lib-enh { font-family: var(--f-latin); color: #ffe08a; font-weight: 700; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
@@ -708,6 +711,7 @@ button.mat:hover, button.mat:focus-visible { border-color: #ffe08a; outline: non
         <section class="library" aria-labelledby="library-title">
           <div class="samples-head"><h2 id="library-title">我的武器庫</h2><span id="library-count"></span></div>
           <p class="field-hint">抽過、繼承過的武器都會自動收進來。每把武器的熟練度與連勝各自保留，換回來不會歸零。</p>
+          <p class="book-bar" id="book-bar"></p>
           <ul class="lib-grid" id="library-grid"></ul>
         </section>
       </div>
@@ -2608,6 +2612,44 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
   MWL.Art = { renderWeaponSVG, shade };
 
   /* ------------------------------------------------------------------ *
+   * Books：技能書 —— 熟練度滿級（Lv.20）的武器在計分的對戰中有機率掉落
+   * 每本可讓武器庫裡任一把未滿級的武器熟練度 +1 級（保留該級的進度比例）。
+   * ------------------------------------------------------------------ */
+  const BOOK_DROP = { win: 0.1, draw: 0.04, loss: 0.04 }; // 勝利 10%、平手或落敗 4%
+  const BOOK_MAX = 99;
+  // 這場是否掉落技能書：只有出戰武器熟練度已滿級才會掉；rand 可傳入以便測試
+  function rollBook(result, masteryLevel, rand) {
+    if ((masteryLevel | 0) < MASTERY_MAX) return false;
+    return (rand || Math.random)() < (BOOK_DROP[result] || 0);
+  }
+  // 技能書提升的經驗：剛好 +1 級，並保留目前這一級的進度比例
+  function bookXp(xp) {
+    const lv = levelFromXp(xp);
+    if (lv >= MASTERY_MAX) return 0;
+    const span = xpForLevel(lv + 1) - xpForLevel(lv);
+    const next = lv + 1 >= MASTERY_MAX ? 0 : xpForLevel(lv + 2) - xpForLevel(lv + 1);
+    const ratio = span ? (Math.max(0, xp) - xpForLevel(lv)) / span : 0;
+    return xpForLevel(lv + 1) + Math.floor(ratio * next) - Math.max(0, xp);
+  }
+  function createBookStore(storage) {
+    return {
+      count() { return clamp(Math.floor(+storage.get('books', 0)) || 0, 0, BOOK_MAX); },
+      add(n) { const c = Math.min(BOOK_MAX, this.count() + (n || 1)); storage.set('books', c); return c; },
+      // 對某把武器使用一本：回傳 { ok, before, after } 或 { ok:false, reason }
+      use(masteryStore, code) {
+        if (this.count() <= 0) return { ok: false, reason: '沒有技能書。' };
+        const rec = masteryStore.get(code);
+        const before = levelFromXp(rec.xp);
+        if (before >= MASTERY_MAX) return { ok: false, reason: '這把武器的熟練度已經滿級。' };
+        storage.set('books', this.count() - 1);
+        const r = masteryStore.addXp(code, bookXp(rec.xp));
+        return { ok: true, before, after: r.after, left: this.count() };
+      },
+    };
+  }
+  MWL.Books = { DROP: BOOK_DROP, MAX: BOOK_MAX, roll: rollBook, xpFor: bookXp, createStore: createBookStore };
+
+  /* ------------------------------------------------------------------ *
    * Battle：本機模擬對戰
    * 勝負由攻擊、防禦、速度、暴擊與技能共同決定，並含有可重現的隨機性。
    * ------------------------------------------------------------------ */
@@ -3361,11 +3403,12 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     { id: 'enh_10', name: '十重鍛鍊', desc: '任一武器強化到 +10', test: (p) => p.maxEnh >= 10 },
     { id: 'enh_15', name: '千錘百煉', desc: '任一武器強化到 +15', test: (p) => p.maxEnh >= 15 },
     { id: 'awaken', name: '器魂覺醒', desc: '把武器強化到 +20，覺醒第二技能', test: (p) => p.maxEnh >= 20 },
+    { id: 'book', name: '秘傳之書', desc: '用滿級武器在對戰中獲得技能書', test: (p) => p.books >= 1 },
     { id: 'broken', name: '劍折重生', desc: '經歷一次強化毀損（還是要繼續練下去）', test: (p) => p.broken >= 1 },
   ];
   function createProfile(storage) {
     const blank = { wins: 0, battles: 0, bestStreak: 0, upsets: 0, bigUpsets: 0, maxLevel: 0, dailyTotal: 0, dailyBest: 0, roomWins: 0, forged: 0, mythic: 0,
-      enhTries: 0, enhWins: 0, maxEnh: 0, broken: 0 };
+      enhTries: 0, enhWins: 0, maxEnh: 0, broken: 0, books: 0 };
     return {
       get() { return Object.assign({}, blank, storage.get('profile', {})); },
       unlocked() { return storage.get('achievements', {}); },
@@ -3679,7 +3722,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
  * ===================================================================== */
 (function () {
   'use strict';
-  const { Text, Forge, Art, Battle, Opponents, Storage, Leaderboard, Future, Data, SeedCode, Mastery, Nickname, Arena, RoomNet, FairPlay, Holding, Streak, Daily, Achievements, Share, Enhance } = window.MWL;
+  const { Text, Forge, Art, Battle, Opponents, Storage, Leaderboard, Future, Data, SeedCode, Mastery, Nickname, Arena, RoomNet, FairPlay, Holding, Streak, Daily, Achievements, Share, Enhance, Books } = window.MWL;
 
   const store = Storage.createStorage('mwl2_');
   // 排行榜：預設本機；在 Claude 上且能使用共享資料時，切換為「這個頁面上的真實玩家」
@@ -3721,6 +3764,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
   });
   const masteryStore = Mastery.createStore(store);
   const enhStore = Enhance.createStore(store);
+  const bookStore = Books.createStore(store);
   const enhOf = (code) => enhStore.get(code).lv;
   // 某把武器（本體）套用這台裝置上的熟練度與強化
   const grown = (base) => Mastery.applyMastery(base, masteryStore.get(base.code).xp, null, enhOf(base.code));
@@ -4119,6 +4163,9 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     const cur = state.base && state.base.code;
     list.sort((a, b) => (b.code === cur) - (a.code === cur));
     $('#library-count').textContent = `${list.length} 把${list.length >= collection.LIMIT ? '（已滿，最舊的會被移出）' : ''}`;
+    const books = bookStore.count();
+    const bb = $('#book-bar');
+    if (bb) bb.innerHTML = books ? `📖 技能書 <strong>${books}</strong> 本・點武器下方的「技能書」可讓熟練度 +1 級` : '📖 技能書 0 本・熟練度滿級的武器在對戰中有機率獲得';
     grid.innerHTML = list.map((x) => {
       const w = grown(Forge.forgeFromSeed(x.seed, holderName(''), x.ver));
       const rec = masteryStore.get(x.code);
@@ -4127,11 +4174,23 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
         ${Art.renderWeaponSVG(w, { idPrefix: 'lib' + x.code.replace(/-/g, '').slice(-6), size: 140 })}
         <span class="lib-name">${esc(w.name)}${w.enh && w.enh.level ? ` <span class="lib-enh">+${w.enh.level}</span>` : ''}</span>
         <span class="lib-meta"><b>${esc(w.rarity.name)}</b>・Lv.${w.mastery.level}・戰力 ${w.power}${rec.bestStreak ? `・最高 ${rec.bestStreak} 連勝` : ''}</span>
+        ${books && w.mastery.level < Mastery.MAX ? `<button class="btn btn-book" type="button" data-book="${esc(x.code)}">📖 技能書 Lv.${w.mastery.level} → ${w.mastery.level + 1}</button>` : ''}
         ${on ? '<span class="lib-on">裝備中</span>' : `<div class="lib-actions"><button class="btn" type="button" data-equip="${esc(x.code)}">裝備</button><button class="btn btn-ghost btn-del" type="button" data-del="${esc(x.code)}" aria-label="從武器庫移除 ${esc(w.name)}">移除</button></div>`}
       </li>`;
     }).join('');
   }
   $('#library-grid').addEventListener('click', (e) => {
+    const bk = e.target.closest('[data-book]');
+    if (bk) {
+      if (state.playing || room.playing) { toast('戰鬥中不能使用技能書'); return; }
+      const r = bookStore.use(masteryStore, bk.dataset.book);
+      if (!r.ok) { toast(r.reason); return; }
+      if (state.base && bk.dataset.book === state.base.code) { state.weapon = grown(state.base); renderCard(state.weapon); animateBars(); publishCurrent(); }
+      celebrate(profile.update((p) => { p.maxLevel = Math.max(p.maxLevel, r.after); }));
+      renderLibrary();
+      toast(`熟練度提升至 Lv.${r.after}（剩 ${r.left} 本技能書）`);
+      return;
+    }
     const eq = e.target.closest('[data-equip]');
     if (eq) {
       if (state.playing || room.playing) { toast('戰鬥中不能更換武器'); return; }
@@ -4829,7 +4888,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     const dailyLine = p.daily ? `<span class="xp-gain up">每日挑戰完成！額外經驗 +${Daily.BONUS_XP}・連續修行 ${p.daily.streak} 天</span>` : '';
     const shareLine = result === 'win' && (p.milestone || p.daily) ? '<button class="share-inline" type="button" data-share-game>找朋友來挑戰</button>' : '';
     const copyBtn = '<button class="share-inline" type="button" data-copy-battle="npc">複製戰鬥過程</button>';
-    banner.innerHTML = `${label}<small>${esc(detail)}</small>${xpLineHTML(xp, lv, now)}${streakLine}${dailyLine}${rule}<span class="banner-actions">${copyBtn}${shareLine}</span>`;
+    banner.innerHTML = `${label}<small>${esc(detail)}</small>${xpLineHTML(xp, lv, now)}${bookLine(p)}${streakLine}${dailyLine}${rule}<span class="banner-actions">${copyBtn}${shareLine}</span>`;
     banner.hidden = false;
     if (lv.after > lv.before) toast(`熟練度提升至 Lv.${lv.after}！`);
     celebrate(p.fresh);
@@ -4851,6 +4910,9 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
   function gainMastery(result, me, opp, kind) {
     const streakBefore = masteryStore.get(me.code).streak;
     const xp = Mastery.battleXp(result, me.power, opp.power, streakBefore);
+    // 技能書：出戰武器熟練度已滿級時，有機率掉落
+    const book = Books.roll(result, me.mastery.level);
+    if (book) bookStore.add(1);
     const lv = masteryStore.addBattle(me.code, result, xp);
     state.weapon = withMastery(state.base);
     const rec = lv.rec;
@@ -4865,19 +4927,24 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
       }
       p.bestStreak = Math.max(p.bestStreak, rec.bestStreak);
       p.maxLevel = Math.max(p.maxLevel, state.weapon.mastery.level);
+      if (book) p.books++;
     });
+    if (book) { toast('獲得技能書 ×1！'); renderLibrary(); }
     const milestone = result === 'win' ? Streak.milestone(rec.streak) : null;
     if (milestone) toast(`${milestone.n} 連勝！「${milestone.name}」`);
-    return { xp, lv, now: state.weapon, fresh, milestone };
+    return { xp, lv, now: state.weapon, fresh, milestone, book };
   }
   // 新解鎖的成就逐一提示
   function celebrate(list) {
     (list || []).forEach((a, i) => setTimeout(() => toast(`解鎖成就：${a.name}`), 900 + i * 1600));
   }
+  function bookLine(p) {
+    return p && p.book ? `<span class="xp-gain up">📖 獲得技能書 ×1（目前 ${bookStore.count()} 本，可在武器庫替其他武器熟練度 +1 級）</span>` : '';
+  }
   function xpLineHTML(xp, lv, now) {
     return lv.after > lv.before
       ? `<span class="xp-gain up">熟練經驗 +${xp}・熟練度提升至 Lv.${lv.after}（${esc(now.mastery.tier)}），技能傷害 +${pct(now.mastery.dmgBonus)}</span>`
-      : `<span class="xp-gain">熟練經驗 +${xp}${now.mastery.next != null ? `・距 Lv.${lv.after + 1} 還差 ${now.mastery.next - now.mastery.xp}` : '・已達最高等級'}</span>`;
+      : `<span class="xp-gain">熟練經驗 +${xp}${now.mastery.next != null ? `・距 Lv.${lv.after + 1} 還差 ${now.mastery.next - now.mastery.xp}` : '・已達最高等級（勝利 10%、平手或落敗 4% 機率獲得技能書）'}</span>`;
   }
 
   $('#btn-fight').addEventListener('click', startBattle);
@@ -5074,7 +5141,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     if (v.isPlayer) {
       const { result, counted, xp, lv, now } = commit;
       banner.className = 'result-banner ' + result;
-      const extra = counted ? xpLineHTML(xp, lv, now)
+      const extra = counted ? xpLineHTML(xp, lv, now) + bookLine(commit)
         : '<span class="xp-gain" style="color:var(--muted)">友誼賽：今天已和這把武器計分過，這場不計經驗與戰績</span>';
       banner.innerHTML = `${{ win: '勝利', loss: '落敗', draw: '平手' }[result]}<small>對手：${esc(fw[other].owner)}・${res.rounds} 回合${counted ? '・已計分' : ''}</small>${extra}`;
       if (counted && lv.after > lv.before) toast(`熟練度提升至 Lv.${lv.after}！`);
