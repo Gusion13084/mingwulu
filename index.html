@@ -3295,46 +3295,101 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     for (const e of ENCOUNTERS) { r -= e.weight; if (r < 0) return e; }
     return ENCOUNTERS[1];
   }
-  // 從多個候選中挑戰力最接近「這次遭遇的目標戰力」的對手；對手的熟練度與強化等級依遭遇類型浮動。rand 可傳入以便測試
-  function makeOpponent(playerWeapon, rand, streak) {
-    rand = rand || Math.random;
-    const enc = pickEncounter(rand);
-    // 連勝越多，對手越強（每場 +1.5%，最多再強 15%），保持緊張感
-    const ramp = Math.min(0.15, Math.max(0, streak | 0) * 0.015);
-    const target = playerWeapon.power * (enc.power[0] + rand() * (enc.power[1] - enc.power[0]) + ramp);
-    const pLv = (playerWeapon.mastery && playerWeapon.mastery.level) || 0;
-    const pEnh = (playerWeapon.enh && playerWeapon.enh.level) || 0;
-    const span = (r) => r[0] + rand() * (r[1] - r[0]);
-    let best = null;
-    for (let i = 0; i < 16; i++) {
-      const name = NPC_NAMES[Math.floor(rand() * NPC_NAMES.length)];
-      const seed = Math.floor(rand() * 9007199254740991);
-      const base = forgeFromSeed(seed, name);
-      let lv = clamp(Math.round(pLv + span(enc.lv)), 0, MASTERY_MAX);
-      // 玩家已強化：對手也帶著依遭遇類型浮動的強化等級；有強化的對手熟練度必定是 Lv.20
-      let e = 0;
-      if (pEnh > 0) { e = clamp(Math.round(pEnh + span(enc.enh)), 0, ENH_MAX); if (e > 0) lv = MASTERY_MAX; }
-      const w = applyMastery(base, 0, lv, e);
-      w.npc = { seed, ver: CURRENT_VER, owner: name, lv, enh: e, enc: enc.id };
-      if (!best || Math.abs(w.power - target) < Math.abs(best.power - target)) best = w;
+  /* ---------- 系統玩家池 ----------
+   * 模擬一個真實的玩家群體：大多數人還在練功，強化到高等級的人很少。
+   * 每天換一批（同一天所有人看到同一個玩家池），配對時從池子裡找戰力在遭遇範圍內的人；
+   * 範圍內沒有人（例如你已經站在頂端），就往下找最接近的對手——所以越頂尖，遇到比你強的人越少。 */
+  const POOL_SIZE = 900;
+  const POOL_TIERS = [
+    { id: 'novice', name: '新手',   weight: 34,  lv: [0, 3],   enh: [0, 0] },
+    { id: 'normal', name: '一般',   weight: 30,  lv: [3, 13],  enh: [0, 0] },
+    { id: 'skilled', name: '熟練',  weight: 18,  lv: [14, 20], enh: [0, 0] },
+    { id: 'forged', name: '強化者', weight: 11,  lv: [20, 20], enh: [1, 8] },
+    { id: 'expert', name: '高手',   weight: 5,   lv: [20, 20], enh: [9, 14] },
+    { id: 'top',    name: '頂尖',   weight: 2,   lv: [20, 20], enh: [15, 20] },
+  ];
+  const poolCache = new Map();
+  function npcPool(key) {
+    key = key || dayKey();
+    if (poolCache.has(key)) return poolCache.get(key);
+    const rng = makeRng(cyrb53('npcpool|' + key), 'pool');
+    const r = () => rng.next();
+    const list = [];
+    for (let i = 0; i < POOL_SIZE; i++) {
+      let x = r() * 100, tier = POOL_TIERS[0];
+      for (const T of POOL_TIERS) { x -= T.weight; if (x < 0) { tier = T; break; } }
+      const owner = NPC_NAMES[Math.floor(r() * NPC_NAMES.length)];
+      const seed = Math.floor(r() * 9007199254740991);
+      const lv = tier.lv[0] + Math.floor(r() * (tier.lv[1] - tier.lv[0] + 1));
+      const e = tier.enh[0] + Math.floor(r() * (tier.enh[1] - tier.enh[0] + 1));
+      const w = applyMastery(forgeFromSeed(seed, owner, CURRENT_VER), 0, lv, e);
+      list.push({ seed, owner, lv, enh: e, tier: tier.id, power: w.power });
     }
-    best.isNpc = true;
-    best.encounter = { id: enc.id, name: enc.name };
-    return best;
+    list.sort((a, b) => a.power - b.power);
+    if (poolCache.size > 3) poolCache.delete(poolCache.keys().next().value);
+    poolCache.set(key, list);
+    return list;
+  }
+  // 依實際戰力比例標示遭遇類型
+  function encounterFor(ratio) {
+    if (ratio < 0.86) return ENCOUNTERS[0];
+    if (ratio < 1.08) return ENCOUNTERS[1];
+    if (ratio < 1.33) return ENCOUNTERS[2];
+    return ENCOUNTERS[3];
+  }
+  function npcFromEntry(x, encId) {
+    const enc = ENCOUNTERS.find((e) => e.id === encId) || ENCOUNTERS[1];
+    const tier = POOL_TIERS.find((t) => t.id === x.tier) || null;
+    const w = applyMastery(forgeFromSeed(x.seed, x.owner, CURRENT_VER), 0, x.lv, x.lv >= MASTERY_MAX ? x.enh : 0);
+    w.npc = { seed: x.seed, ver: CURRENT_VER, owner: x.owner, lv: x.lv, enh: x.lv >= MASTERY_MAX ? x.enh : 0, enc: enc.id, tier: tier ? tier.id : '' };
+    w.isNpc = true;
+    w.encounter = { id: enc.id, name: enc.name, tier: tier ? tier.name : '' };
+    return w;
+  }
+  // 配對：先抽遭遇類型（決定想找的戰力範圍），再從玩家池裡找；找不到就退一級，最後取最接近的人。rand 可傳入以便測試
+  function makeOpponent(playerWeapon, rand, streak, poolKey) {
+    rand = rand || Math.random;
+    const pool = npcPool(poolKey);
+    const P = playerWeapon.power;
+    // 連勝越多，對手越強（每場 +1.2%，最多再強 12%）
+    const ramp = Math.min(0.12, Math.max(0, streak | 0) * 0.012);
+    let enc = pickEncounter(rand);
+    const inRange = (lo, hi) => {
+      // 二分搜尋範圍 [lo, hi]
+      let a = 0, b = pool.length;
+      while (a < b) { const m = (a + b) >> 1; if (pool[m].power < lo) a = m + 1; else b = m; }
+      const out = [];
+      for (let i = a; i < pool.length && pool[i].power <= hi; i++) out.push(pool[i]);
+      return out;
+    };
+    // 在範圍內抽一個目標戰力，取最接近的 3 人之一（不受池子疏密影響）
+    const nearest = (list, target) => list.slice().sort((a, b) => Math.abs(a.power - target) - Math.abs(b.power - target)).slice(0, 3);
+    let cand = [];
+    for (let idx = ENCOUNTERS.indexOf(enc); idx >= 0 && !cand.length; idx--) {
+      const E = ENCOUNTERS[idx];
+      const lo = P * (E.power[0] + ramp), hi = P * (E.power[1] + ramp);
+      const inR = inRange(lo, hi);
+      if (inR.length) cand = nearest(inR, lo + rand() * (hi - lo));
+    }
+    // 範圍內都沒人（站在池子的最頂端或最底端）：取戰力最接近的人
+    if (!cand.length) cand = nearest(pool, P * (0.93 + ramp));
+    const x = cand[Math.floor(rand() * cand.length)];
+    return npcFromEntry(x, encounterFor(x.power / P).id);
   }
   // 由保存的對手資料重建同一位對手（重新整理頁面也不會換人）
   function restoreOpponent(npc) {
     if (!npc || !Number.isSafeInteger(npc.seed) || NPC_NAMES.indexOf(npc.owner) < 0) return null;
     const enc = ENCOUNTERS.find((e) => e.id === npc.enc) || ENCOUNTERS[1];
+    const tier = POOL_TIERS.find((t) => t.id === npc.tier) || null;
     const lv = clamp(npc.lv | 0, 0, MASTERY_MAX), e = lv >= MASTERY_MAX ? clamp(npc.enh | 0, 0, ENH_MAX) : 0;
     const w = applyMastery(forgeFromSeed(npc.seed, npc.owner, npc.ver === 2 ? 2 : CURRENT_VER), 0, lv, e);
-    w.npc = { seed: npc.seed, ver: npc.ver, owner: npc.owner, lv, enh: e, enc: enc.id };
+    w.npc = { seed: npc.seed, ver: npc.ver, owner: npc.owner, lv, enh: e, enc: enc.id, tier: tier ? tier.id : '' };
     w.isNpc = true;
-    w.encounter = { id: enc.id, name: enc.name };
+    w.encounter = { id: enc.id, name: enc.name, tier: tier ? tier.name : '' };
     return w;
   }
 
-  MWL.Opponents = { makeOpponent, restore: restoreOpponent, NPC_NAMES, ENCOUNTERS };
+  MWL.Opponents = { makeOpponent, restore: restoreOpponent, NPC_NAMES, ENCOUNTERS, pool: npcPool, POOL_TIERS, POOL_SIZE };
 
   /* ------------------------------------------------------------------ *
    * Storage：localStorage 安全包裝（隱私模式或被封鎖時自動退回記憶體）
@@ -5687,7 +5742,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     fa.style.setProperty('--r-color', a.rarity.color);
     fb.style.setProperty('--r-color', b.rarity.color);
     fa.innerHTML = fighterHTML(a, '你', previewHp(a), previewHp(a));
-    const tag = b.isTower ? (b.bossTitle ? `第 ${b.floor} 層魔王` : `試煉之塔 第 ${b.floor} 層`) : b.isDaily ? '今日守關者' : (b.encounter ? b.encounter.name : '系統對手');
+    const tag = b.isTower ? (b.bossTitle ? `第 ${b.floor} 層魔王` : `試煉之塔 第 ${b.floor} 層`) : b.isDaily ? '今日守關者' : (b.encounter ? b.encounter.name + (b.encounter.tier ? `・${b.encounter.tier}玩家` : '') : '系統對手');
     fb.innerHTML = fighterHTML(b, tag, previewHp(b), previewHp(b));
     fb.dataset.enc = b.isTower ? (b.bossTitle ? 'elite' : 'strong') : b.isDaily ? 'daily' : (b.encounter ? b.encounter.id : 'even');
   }
