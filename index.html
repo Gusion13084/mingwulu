@@ -273,6 +273,7 @@ body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-a
 .skill-tier.t2 { background: #9fb0bf; color: #141821; }
 .skill-tier.t3 { background: #6f6a7f; color: #f1eef8; }
 .skill-tier.trig { background: rgba(255, 143, 168, 0.18); color: #ffc2cf; border: 1px solid rgba(255, 143, 168, 0.55); font-family: var(--f-body); }
+.skill-tier.focus { background: rgba(90, 168, 255, 0.2); color: #cfe2ff; border: 1px solid rgba(90, 168, 255, 0.6); font-family: var(--f-body); }
 .skill-tier.comp { background: rgba(157, 114, 255, 0.25); color: #d8c6ff; border: 1px solid rgba(157, 114, 255, 0.6); font-family: var(--f-body); }
 .skill-name { font-family: var(--f-display); font-weight: 900; font-size: 19px; }
 .skill-desc { font-size: 14px; color: var(--muted); }
@@ -1250,8 +1251,8 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
   function pct(n) { return Math.round(n * 100) + '%'; }
 
   /* ---------- 第三版：技能階位與複合技能 ---------- */
-  // 階位：T1 原始威力；T2 威力 90%、發動率 +3%；T3 威力 70%、發動率 +6%。品質越高越容易出 T1
-  const SKILL_TIERS = [{ t: 1, k: 1, c: 0 }, { t: 2, k: 0.9, c: 0.03 }, { t: 3, k: 0.7, c: 0.06 }];
+  // 階位：T1 原始威力；T2 威力 90%、發動率 +3%；T3 威力 75%、發動率 +6%。品質越高越容易出 T1
+  const SKILL_TIERS = [{ t: 1, k: 1, c: 0 }, { t: 2, k: 0.9, c: 0.03 }, { t: 3, k: 0.75, c: 0.06 }];
   const TIER_WEIGHTS = [[20, 40, 40], [30, 40, 30], [40, 40, 20], [50, 35, 15], [60, 30, 10], [70, 25, 5]];
   // 複合技能：主效果威力 ×0.78，再附帶一個副效果（威力約為單一技能的 60%～70%）
   const COMPOUND_RATE = 0.3, COMPOUND_MAIN = 0.78;
@@ -1263,6 +1264,16 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
   ];
   const TRIGGER_NAMES = Object.fromEntries(TRIGGERS.map((t) => [t.id, t.name]));
   const CHARGE_K = [1.05, 1.5], DESPERATE_BASE = 0.7, OPENING_BASE = 0.5, CHAIN_BASE = 0.75;
+  // 複合技能副效果的觸發條件（副效果不一定和主效果同時發動）
+  //   with 同時附帶｜chance 主技能發動時 50% 機率附帶（較強）｜lowhp 自身生命低於 50% 時才附帶（較強）
+  //   foeHigh 對手生命高於 60% 時才附帶｜onAttack 改由普通攻擊命中時 30% 機率附帶
+  const RIDER_CONDS = [
+    { id: 'with', weight: 34, k: 1 }, { id: 'chance', weight: 18, k: 1.5 }, { id: 'lowhp', weight: 16, k: 1.8 },
+    { id: 'foeHigh', weight: 14, k: 1.3 }, { id: 'onAttack', weight: 18, k: 1.5 },
+  ];
+  const FOCUS_BASE = 1.0, FOCUS_MASTERY = 1.2, RIDER_MASTERY = 0.4;
+  const RIDER_CHANCE = 0.5, RIDER_LOWHP = 0.5, RIDER_FOEHIGH = 0.6, RIDER_ON_ATTACK = 0.3;
+  const RIDER_COND_NAMES = { with: '同時', chance: '機率', lowhp: '背水', foeHigh: '壓制', onAttack: '普攻附帶' };
   const RIDERS = ['bleed', 'weaken', 'sunder', 'drain', 'guard', 'stun', 'silence', 'regen'];
   const MAG_KEYS = ['mult', 'shield', 'heal', 'bleed', 'weaken', 'exec', 'sunder', 'reflect', 'regen'];
   const scaleMag = (o, k) => { const x = Object.assign({}, o); for (const key of MAG_KEYS) if (x[key] != null) x[key] = round2(x[key] * k); return x; };
@@ -1280,6 +1291,11 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     }
     return r;
   }
+  function scaleRider(r, k) {
+    const x = scaleMag(r, k);
+    if (x.stunChance != null) x.stunChance = round2(Math.min(0.8, x.stunChance * k));
+    return x;
+  }
   function refineSkillV3(skill, xr, type, element, rarityIndex, lvl, EFFECTS_TBL) {
     const tier = xr.weighted(SKILL_TIERS.map((t, i) => Object.assign({ weight: TIER_WEIGHTS[rarityIndex][i] }, t)));
     let s = Object.assign({}, skill);
@@ -1287,8 +1303,14 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     if (s.effect !== 'haste' && pool.length && xr.chance(COMPOUND_RATE)) {
       const re = xr.pick(pool);
       s = scaleMag(s, COMPOUND_MAIN);
-      s.rider = makeRider(xr, re, rarityIndex, lvl);
+      const cond = xr.weighted(RIDER_CONDS);
+      s.rider = scaleRider(makeRider(xr, re, rarityIndex, lvl), cond.k);
+      if (cond.id !== 'with') s.rider.cond = cond.id;
       s.name = `${s.name}＋${xr.pick(EFFECTS_TBL[re].names)}`;
+    } else {
+      // 單一技能＝專精：主效果威力較高，且熟練度的傷害加成 ×1.3（越練越強，後期上限較高）
+      s = scaleMag(s, FOCUS_BASE);
+      s.focus = true;
     }
     s = scaleMag(s, tier.k);
     if (s.rider) s.rider = scaleMag(s.rider, tier.k);
@@ -1323,7 +1345,14 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
   function describeSkill(s) {
     if (s.rider) {
       const main = describeSkill(Object.assign({}, s, { rider: null })).replace(/。$/, '');
-      return `${main}；並附帶：${riderText(s.rider)}。`;
+      const rt = riderText(s.rider);
+      switch (s.rider.cond) {
+        case 'chance': return `${main}；發動時 ${pct(RIDER_CHANCE)} 機率附帶：${rt}。`;
+        case 'lowhp': return `${main}；自身生命低於 ${pct(RIDER_LOWHP)} 時附帶：${rt}。`;
+        case 'foeHigh': return `${main}；對手生命高於 ${pct(RIDER_FOEHIGH)} 時附帶：${rt}。`;
+        case 'onAttack': return `${main}。另外，普通攻擊命中時有 ${pct(RIDER_ON_ATTACK)} 機率：${rt}。`;
+        default: return `${main}；並附帶：${rt}。`;
+      }
     }
     const head = s.trigger === 'charge' ? `每第 ${s.every} 次出手必定發動：`
       : s.trigger === 'desperate' ? `每次出手有 ${pct(s.chance)} 機率發動（生命低於 40% 時機率加倍）：`
@@ -1371,11 +1400,12 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
       drain: m * (r.heal || 0) * 0.6, guard: (r.shield || 0) * 0.6, stun: m * 0.5 * ((r.stunChance || 0) / 0.35),
       silence: m * 0.3, regen: (r.regen || 0) * 9,
     }[r.effect] || 0;
+    const condF = !r ? 1 : { chance: RIDER_CHANCE, lowhp: 0.45, foeHigh: 0.5, onAttack: 1 }[r.cond] || 1;
     const c = skill.trigger === 'charge' ? 1 / (skill.every || 3)
       : skill.trigger === 'desperate' ? skill.chance * 1.3
         : skill.trigger === 'opening' ? skill.chance + 0.08
           : skill.trigger === 'chain' ? skill.chance * 1.2 : skill.chance;
-    return Math.round(c * (eff + extra) * 110);
+    return Math.round(c * (eff + extra * condF) * 110);
   }
 
   const ANON = '無名俠客';
@@ -1496,7 +1526,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
       `【名武錄】${w.owner} 的專屬武器`,
       `◆ ${w.name}${enhTag(w)}（${w.rarity.name}・${w.type.name}・${w.element.name}屬性）`,
       `攻擊 ${w.stats.atk}｜防禦 ${w.stats.def}｜速度 ${w.stats.spd}｜暴擊 ${w.stats.crit}%`,
-      `技能「${w.skill.name}」${w.skill.tier || w.skill.rider || w.skill.trigger ? `（${[w.skill.tier ? 'T' + w.skill.tier : '', w.skill.rider ? '複合' : '', w.skill.trigger ? TRIGGER_NAMES[w.skill.trigger] : ''].filter(Boolean).join('・')}）` : ''}：${w.skill.desc}`,
+      `技能「${w.skill.name}」${w.skill.tier || w.skill.focus || w.skill.rider || w.skill.trigger ? `（${[w.skill.tier ? 'T' + w.skill.tier : '', w.skill.focus ? '專精' : '', w.skill.rider ? '複合' + (w.skill.rider.cond ? '（' + RIDER_COND_NAMES[w.skill.rider.cond] + '）' : '') : '', w.skill.trigger ? TRIGGER_NAMES[w.skill.trigger] : ''].filter(Boolean).join('・')}）` : ''}：${w.skill.desc}`,
     ].concat(w.skill2 ? [`覺醒技能「${w.skill2.name}」：${w.skill2.desc}`] : []).concat([
       `熟練度：Lv.${m.level} ${m.tier}（技能傷害 +${Math.round(m.dmgBonus * 100)}%）`,
     ]).concat(e ? [`強化：+${e}${e >= 20 ? '（已覺醒）' : ''}`] : []).concat([
@@ -1577,7 +1607,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
   }
   const SHIELD_RATIO = 0.85;
   function masterSkill(base, info, chanceShare) {
-    const k = 1 + info.dmgBonus;
+    const k = 1 + info.dmgBonus * (base.focus ? FOCUS_MASTERY : 1);
     const sk = Object.assign({}, base);
     sk.chance = round2(clamp(base.chance + info.chanceBonus * chanceShare, 0, 0.6));
     if (sk.mult != null) sk.mult = round2(base.mult * k);
@@ -1591,7 +1621,12 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     if (sk.trigger === 'opening') sk.chance = round2(clamp(base.chance + info.chanceBonus * chanceShare * 0.5, 0, 0.6));
     // 護盾：實際護盾量為生成數值的 85%（2026-10 平衡調整），再乘上熟練度加成
     if (sk.shield != null) { sk.shield = round2(base.shield * SHIELD_RATIO * k); sk.stackCap = true; }
-    if (sk.rider && sk.rider.shield != null) sk.rider = Object.assign({}, sk.rider, { shield: round2(sk.rider.shield * SHIELD_RATIO * k) });
+    // 複合技能的副效果吃 40% 的熟練度加成（主效果吃完整加成）
+    if (sk.rider) {
+      const rk = 1 + info.dmgBonus * RIDER_MASTERY;
+      sk.rider = scaleRider(sk.rider, rk);
+      if (sk.rider.shield != null) sk.rider.shield = round2(sk.rider.shield * SHIELD_RATIO * (k / rk));
+    }
     sk.desc = describeSkill(sk);
     return sk;
   }
@@ -1620,7 +1655,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     return Math.max(5, Math.round(base * ratio * bonus));
   }
 
-  MWL.Forge = { forgeWeapon, forgeFromSeed, weaponToText, computePower, describeSkill, ANON, SKILL_TIERS, COMPOUND_RATE, TRIGGERS, TRIGGER_NAMES };
+  MWL.Forge = { FOCUS_BASE, FOCUS_MASTERY, forgeWeapon, forgeFromSeed, weaponToText, computePower, describeSkill, ANON, SKILL_TIERS, COMPOUND_RATE, TRIGGERS, TRIGGER_NAMES, RIDER_CONDS, RIDER_COND_NAMES };
   MWL.SeedCode = { encode: encodeSeedCode, decode: decodeSeedCode };
   MWL.Mastery = { applyMastery, masteryInfo, levelFromXp, xpForLevel, battleXp, streakBonus, MAX: MASTERY_MAX, DMG_PER_LV: MASTERY_DMG_PER_LV };
 
@@ -2915,10 +2950,15 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
   }
 
   function useSkill(rng, a, t, round, push, sk) {
-    if (sk.rider) {
+    if (sk.rider && sk.rider.cond !== 'onAttack') {
+      // 條件在主效果之前判定（例如「對手生命高於 60%」看的是出手前的狀態）
+      const c = sk.rider.cond;
+      const ok = c === 'lowhp' ? a.hp < a.maxHp * RIDER_LOWHP
+        : c === 'foeHigh' ? t.hp > t.maxHp * RIDER_FOEHIGH
+          : c === 'chance' ? rng.chance(RIDER_CHANCE) : true;
       let ev = null;
       useSkillCore(rng, a, t, round, (e) => { if (!ev && e.kind === 'skill') ev = e; return push(e); }, sk);
-      if (ev) applyRider(rng, a, t, sk.rider, ev);
+      if (ev && ok) applyRider(rng, a, t, sk.rider, ev);
       return;
     }
     return useSkillCore(rng, a, t, round, push, sk);
@@ -3032,7 +3072,11 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     if (crit) d = Math.round(d * 1.6);
     const h = hit(a, t, d);
     const shieldNote = h.absorbed ? `（護盾吸收 ${h.absorbed}）` : '';
-    push({ kind: 'attack', round, actor: a.side, dmg: h.real, crit, text: `${pre}${a.name} ${crit ? '暴擊！' : '攻擊，'}造成 ${h.real} 傷害${shieldNote}${refl(h)}。` });
+    const ev = { kind: 'attack', round, actor: a.side, dmg: h.real, crit, text: `${pre}${a.name} ${crit ? '暴擊！' : '攻擊，'}造成 ${h.real} 傷害${shieldNote}${refl(h)}。` };
+    push(ev);
+    // 複合技能「普攻附帶」：普通攻擊命中時有機率套用副效果（沒有這種技能時不消耗亂數）
+    const r = a.skill && a.skill.rider;
+    if (r && r.cond === 'onAttack' && t.hp > 0 && a.hp > 0 && rng.chance(RIDER_ON_ATTACK)) applyRider(rng, a, t, r, ev);
   }
 
   // 戰鬥過程轉成可貼到聊天或社群的文字（只含暱稱與武器，不含鑄造用的名字）
@@ -3713,7 +3757,8 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
         let mine = null, cbs = [], connCbs = [];
         const emit = () => {
           const now = Date.now();
-          for (const [id, p] of peers) if (now - p.at > 6000) peers.delete(id);
+          // 背景分頁的計時器會被瀏覽器降頻：放寬到 20 秒沒有心跳才視為離開（離開分頁時仍會立刻送出 bye）
+          for (const [id, p] of peers) if (now - p.at > 20000) peers.delete(id);
           const list = [...peers].map(([peerId, p]) => ({ peerId, isSelf: false, state: p.state }));
           if (mine) list.push({ peerId: me, isSelf: true, state: mine });
           cbs.forEach((cb) => cb(list));
@@ -4263,10 +4308,10 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
   // 技能階位與複合標記
   function skillTags(sk) {
     const trig = sk.trigger && Forge.TRIGGER_NAMES[sk.trigger];
-    return (sk.tier ? ` <span class="skill-tier t${sk.tier}">T${sk.tier}</span>` : '') + (sk.rider ? ' <span class="skill-tier comp">複合</span>' : '')
+    return (sk.tier ? ` <span class="skill-tier t${sk.tier}">T${sk.tier}</span>` : '') + (sk.focus ? ' <span class="skill-tier focus">專精</span>' : '') + (sk.rider ? ` <span class="skill-tier comp">複合${sk.rider.cond ? '・' + Forge.RIDER_COND_NAMES[sk.rider.cond] : ''}</span>` : '')
       + (trig ? ` <span class="skill-tier trig">${trig}</span>` : '');
   }
-  function skillTagText(sk) { return [sk.tier ? 'T' + sk.tier : '', sk.rider ? '複合' : '', sk.trigger ? Forge.TRIGGER_NAMES[sk.trigger] : ''].filter(Boolean).join('・'); }
+  function skillTagText(sk) { return [sk.tier ? 'T' + sk.tier : '', sk.focus ? '專精' : '', sk.rider ? '複合' + (sk.rider.cond ? '（' + Forge.RIDER_COND_NAMES[sk.rider.cond] + '）' : '') : '', sk.trigger ? Forge.TRIGGER_NAMES[sk.trigger] : ''].filter(Boolean).join('・'); }
   function renderCard(w) {
     const card = $('#weapon-card');
     card.dataset.rarity = w.rarity.id;
@@ -4290,7 +4335,8 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     };
     const span = m.next == null ? 1 : (m.xp - m.floor) / (m.next - m.floor);
     const nextText = m.next == null ? '已達最高等級' : `下一級還需 ${m.next - m.xp} 經驗`;
-    const boost = m.level > 0 ? `<span class="skill-boost">熟練加成：傷害 +${pct(m.dmgBonus)}・發動率 +${pct(m.chanceBonus)}</span>` : '';
+    const dmgB = w.skill.focus ? m.dmgBonus * Forge.FOCUS_MASTERY : m.dmgBonus;
+    const boost = m.level > 0 ? `<span class="skill-boost">熟練加成：傷害 +${pct(dmgB)}${w.skill.focus ? '（專精 ×' + Forge.FOCUS_MASTERY + '）' : ''}・發動率 +${pct(m.chanceBonus)}</span>` : (w.skill.focus ? '<span class="skill-boost">專精技能：熟練度的傷害加成 ×' + Forge.FOCUS_MASTERY + '，越練越強</span>' : '');
     card.innerHTML = `
       <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
       <div class="card-inner">
