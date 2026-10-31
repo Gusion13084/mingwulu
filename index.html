@@ -90,6 +90,9 @@ body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-a
 }
 .brand-name { font-family: var(--f-display); font-weight: 900; font-size: 18px; letter-spacing: 0.12em; }
 .tabs { margin-left: auto; display: flex; gap: 4px; }
+.sound-btn { flex: none; width: 36px; height: 36px; margin-left: 4px; border-radius: 10px; border: 1px solid var(--line-soft); background: none; color: var(--fg); font-size: 16px; line-height: 1; display: grid; place-items: center; cursor: pointer; }
+.sound-btn[aria-pressed="false"] { opacity: 0.55; }
+@media (max-width: 400px) { .brand-name { display: none; } .sound-btn { width: 32px; margin-left: 2px; } }
 .tab {
   min-height: 44px; padding: 0 12px; border-radius: 10px;
   background: none; border: 1px solid transparent; color: var(--muted);
@@ -641,6 +644,7 @@ button.mat:hover, button.mat:focus-visible { border-color: #ffe08a; outline: non
       <button class="tab" type="button" data-nav="room" id="tab-room">房間</button>
       <button class="tab" type="button" data-nav="board" id="tab-board">排行</button>
     </nav>
+    <button class="sound-btn" type="button" id="btn-sound" aria-pressed="true" aria-label="音效：開（點一下關閉）">🔊</button>
   </div>
 </header>
 
@@ -4035,6 +4039,155 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
 </script>
 <script>
 /* =====================================================================
+ * 名武錄 · 音效模組 (sound.js)
+ * 全部用 Web Audio API 即時合成，沒有任何音效檔，也沒有授權問題。
+ *  - 瀏覽器規定要使用者先點過畫面才能出聲：第一次點擊時才建立音訊。
+ *  - 玩家可用右上角按鈕開關，選擇保存在本機。
+ *  - 不支援 Web Audio 的環境自動靜音，不影響遊戲。
+ * 對外介面：MWL.Sound.play(name, arg)、toggle()、enabled()
+ * ===================================================================== */
+(function () {
+  'use strict';
+  const KEY = 'mwl2_sound';
+  const MASTER = 0.32;
+  let on = true;
+  try { const v = localStorage.getItem(KEY); if (v != null) on = v !== '0'; } catch (e) { /* 隱私模式 */ }
+  let ctx = null, master = null, noiseBuf = null, unlocked = false;
+
+  function ensure() {
+    if (ctx) return ctx;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    try {
+      ctx = new AC();
+      master = ctx.createGain();
+      master.gain.value = on ? MASTER : 0;
+      master.connect(ctx.destination);
+      // 白噪音素材（打擊、揮砍、碎裂用）
+      noiseBuf = ctx.createBuffer(1, Math.floor(ctx.sampleRate * 0.6), ctx.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      // 用獨立的亂數產生器，不動用 Math.random（不影響遊戲其他隨機結果）
+      let x = 2463534242;
+      for (let i = 0; i < d.length; i++) { x ^= x << 13; x ^= x >>> 17; x ^= x << 5; d[i] = ((x >>> 0) / 4294967296) * 2 - 1; }
+    } catch (e) { ctx = null; }
+    return ctx;
+  }
+  // 第一次使用者操作時解鎖音訊（行動裝置必要）
+  function unlock() {
+    if (unlocked) return;
+    const c = ensure();
+    if (!c) return;
+    if (c.state === 'suspended' && c.resume) c.resume().catch(() => {});
+    unlocked = true;
+  }
+  ['pointerdown', 'keydown', 'touchstart'].forEach((ev) => document.addEventListener(ev, unlock, { passive: true, capture: true }));
+
+  /* ---------- 基本音源 ---------- */
+  function env(g, t, a, peak, dur) {
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(Math.max(0.0002, peak), t + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  }
+  // 單音：type 波形、freq 起始頻率、to 結束頻率（滑音）
+  function tone(freq, dur, opt) {
+    opt = opt || {};
+    const t = ctx.currentTime + (opt.delay || 0);
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = opt.type || 'sine';
+    o.frequency.setValueAtTime(freq, t);
+    if (opt.to) o.frequency.exponentialRampToValueAtTime(opt.to, t + dur);
+    if (opt.detune) o.detune.value = opt.detune;
+    env(g, t, opt.attack || 0.005, opt.gain || 0.3, dur);
+    o.connect(g); g.connect(master);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+  // 噪音：filter 濾波器類型與頻率
+  function noise(dur, opt) {
+    opt = opt || {};
+    const t = ctx.currentTime + (opt.delay || 0);
+    const s = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain();
+    s.buffer = noiseBuf;
+    f.type = opt.filter || 'bandpass';
+    f.frequency.setValueAtTime(opt.freq || 1200, t);
+    if (opt.to) f.frequency.exponentialRampToValueAtTime(opt.to, t + dur);
+    f.Q.value = opt.q || 0.8;
+    env(g, t, opt.attack || 0.003, opt.gain || 0.3, dur);
+    s.connect(f); f.connect(g); g.connect(master);
+    s.start(t); s.stop(t + dur + 0.05);
+  }
+  const N = (n) => 440 * Math.pow(2, (n - 69) / 12); // MIDI 音高 → 頻率
+  function arp(notes, step, opt) { notes.forEach((n, i) => tone(N(n), (opt && opt.len) || 0.22, Object.assign({}, opt, { delay: ((opt && opt.delay) || 0) + i * step }))); }
+
+  /* ---------- 音效庫 ---------- */
+  const SFX = {
+    // 召喚：品質越高，音階越長越亮；神話加上閃爍的高音
+    summon(r) {
+      r = r | 0;
+      const scale = [60, 64, 67, 72, 76, 79, 84, 88];
+      arp(scale.slice(0, 3 + r), 0.07, { type: r >= 3 ? 'triangle' : 'sine', gain: 0.18 + r * 0.02, len: 0.25 });
+      if (r >= 4) tone(N(84 + (r >= 5 ? 7 : 0)), 0.9, { type: 'triangle', gain: 0.16, delay: 0.07 * (3 + r), attack: 0.02 });
+      if (r >= 5) for (let i = 0; i < 6; i++) tone(N(96 + (i % 3) * 4), 0.12, { type: 'sine', gain: 0.07, delay: 0.55 + i * 0.06 });
+    },
+    hit() { noise(0.09, { freq: 1400, q: 0.7, gain: 0.32 }); tone(140, 0.1, { type: 'triangle', to: 70, gain: 0.25 }); },
+    crit() { noise(0.12, { freq: 2600, q: 1.2, gain: 0.35 }); tone(220, 0.14, { type: 'square', to: 90, gain: 0.16 }); tone(1760, 0.12, { type: 'triangle', gain: 0.1, delay: 0.02 }); },
+    skill(awakened) {
+      tone(330, 0.22, { type: 'sawtooth', to: 990, gain: 0.1 });
+      noise(0.18, { freq: 900, to: 4000, q: 1.5, gain: 0.18, delay: 0.05 });
+      if (awakened) arp([76, 83, 88], 0.05, { type: 'triangle', gain: 0.12, delay: 0.12, len: 0.3 });
+    },
+    dodge() { noise(0.16, { filter: 'highpass', freq: 3000, to: 1200, gain: 0.16, attack: 0.02 }); },
+    stun() { tone(600, 0.35, { type: 'sine', to: 300, gain: 0.14 }); tone(612, 0.35, { type: 'sine', to: 306, gain: 0.1 }); },
+    heal() { arp([72, 76, 79], 0.05, { type: 'sine', gain: 0.1, len: 0.2 }); },
+    bleed() { tone(110, 0.12, { type: 'triangle', to: 80, gain: 0.12 }); },
+    shield() { tone(1320, 0.25, { type: 'triangle', gain: 0.1 }); tone(1980, 0.2, { type: 'sine', gain: 0.06, delay: 0.02 }); },
+    win() { arp([67, 72, 76, 79, 84], 0.09, { type: 'triangle', gain: 0.2, len: 0.3 }); tone(N(84), 0.7, { type: 'sine', gain: 0.12, delay: 0.45 }); },
+    lose() { arp([67, 63, 60, 55], 0.14, { type: 'triangle', gain: 0.16, len: 0.35 }); },
+    draw() { arp([67, 67], 0.16, { type: 'triangle', gain: 0.14, len: 0.25 }); },
+    milestone() { arp([72, 76, 79, 84, 88, 91], 0.06, { type: 'square', gain: 0.08, len: 0.2 }); },
+    // 強化：敲打聲 → 成功／失敗／碎裂／覺醒
+    forge(cursed) { for (let i = 0; i < 4; i++) { noise(0.06, { freq: cursed ? 700 : 2400, q: 3, gain: 0.22, delay: i * 0.22 }); tone(cursed ? 160 : 880, 0.08, { type: 'triangle', gain: 0.1, delay: i * 0.22 }); } },
+    enhanceOk() { arp([72, 79, 84], 0.07, { type: 'triangle', gain: 0.18, len: 0.3 }); tone(N(96), 0.5, { type: 'sine', gain: 0.08, delay: 0.2 }); },
+    enhanceFail() { tone(220, 0.35, { type: 'square', to: 150, gain: 0.08 }); noise(0.12, { freq: 500, gain: 0.12 }); },
+    shatter() { noise(0.5, { freq: 3500, to: 600, q: 0.6, gain: 0.35 }); for (let i = 0; i < 5; i++) tone(1500 + i * 420, 0.18, { type: 'triangle', gain: 0.07, delay: 0.04 + i * 0.05 }); tone(90, 0.6, { type: 'sawtooth', to: 40, gain: 0.12 }); },
+    awaken() {
+      arp([60, 67, 72, 76, 79, 84, 88], 0.08, { type: 'triangle', gain: 0.16, len: 0.5 });
+      [72, 76, 79, 84].forEach((n) => tone(N(n), 1.4, { type: 'sine', gain: 0.07, delay: 0.6, attack: 0.08 }));
+      noise(0.8, { filter: 'highpass', freq: 6000, gain: 0.05, delay: 0.6, attack: 0.1 });
+    },
+    book() { arp([84, 88, 91, 96], 0.05, { type: 'sine', gain: 0.1, len: 0.25 }); },
+    alert() { tone(N(76), 0.14, { type: 'square', gain: 0.08 }); tone(N(72), 0.18, { type: 'square', gain: 0.08, delay: 0.16 }); },
+    beep(last) { tone(last ? 1320 : 880, last ? 0.25 : 0.1, { type: 'square', gain: 0.07 }); },
+  };
+
+  // 同一時間不要疊太多聲音（快轉時尤其）
+  let lastAt = 0, burst = 0;
+  function play(name, arg) {
+    if (!on || !SFX[name]) return;
+    const c = ensure();
+    if (!c || c.state === 'closed') return;
+    if (c.state === 'suspended') { if (!unlocked) return; c.resume().catch(() => {}); }
+    const now = performance.now();
+    burst = now - lastAt < 60 ? burst + 1 : 0;
+    lastAt = now;
+    if (burst > 4) return;
+    try { SFX[name](arg); } catch (e) { /* 音效失敗不影響遊戲 */ }
+  }
+  function setOn(v) {
+    on = !!v;
+    try { localStorage.setItem(KEY, on ? '1' : '0'); } catch (e) { /* ignore */ }
+    if (master && ctx) master.gain.setTargetAtTime(on ? MASTER : 0, ctx.currentTime, 0.02);
+    return on;
+  }
+  window.MWL.Sound = {
+    play, enabled: () => on, toggle: () => setOn(!on), set: setOn,
+    supported: () => !!(window.AudioContext || window.webkitAudioContext),
+    names: Object.keys(SFX),
+  };
+})();
+
+</script>
+<script>
+/* =====================================================================
  * 名武錄 · 介面模組 (app.js)
  * 依賴 core.js 提供的 window.MWL。只處理畫面、互動、動畫與圖片輸出。
  *
@@ -4087,6 +4240,24 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     if (!b) return;
     const text = b.dataset.copyBattle === 'room' ? room.battleText : state.battleText;
     if (text) copyText(text, '已複製戰鬥過程', '複製戰鬥過程');
+  });
+  // 音效（MWL.Sound 由 sound.js 提供；不存在時自動略過）
+  const sfx = (name, arg) => { const S = window.MWL.Sound; if (S) S.play(name, arg); };
+  function renderSoundBtn() {
+    const b = $('#btn-sound'), S = window.MWL.Sound;
+    if (!b) return;
+    if (!S || !S.supported()) { b.hidden = true; return; }
+    const on = S.enabled();
+    b.textContent = on ? '🔊' : '🔇';
+    b.setAttribute('aria-pressed', String(on));
+    b.setAttribute('aria-label', on ? '音效：開（點一下關閉）' : '音效：關（點一下開啟）');
+  }
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('#btn-sound')) return;
+    const on = window.MWL.Sound.toggle();
+    renderSoundBtn();
+    if (on) sfx('beep', true);
+    toast(on ? '音效已開啟' : '音效已關閉');
   });
   const masteryStore = Mastery.createStore(store);
   const enhStore = Enhance.createStore(store);
@@ -4344,6 +4515,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     const r = w.rarity.index;
     const reveal = () => {
       clearTimeout(state.summonTimer);
+      if (!summon.hidden) sfx('summon', r);
       summon.hidden = true;
       layout.hidden = false;
       const card = $('#weapon-card');
@@ -4662,7 +4834,9 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     if (!res.ok) { closeModal(); toast(res.reason); return; }
     // 結果已在擲骰當下保存；以下只是演出
     $('#modal-box').innerHTML = `<div class="enh-roll ${reduceMotion ? '' : 'spin'} ${res.mode === 'curse' ? 'cursed' : ''}" id="enh-roll"><div class="art">${Art.renderWeaponSVG(before, { idPrefix: 'roll' })}</div><div class="enh-out">${res.mode === 'curse' ? '詛咒強化中…' : '強化中…'}</div></div>`;
+    sfx('forge', res.mode === 'curse');
     if (!reduceMotion) await sleep(1100);
+    sfx(res.outcome === 'break' ? 'shatter' : res.outcome === 'fail' ? 'enhanceFail' : res.awakened ? 'awaken' : 'enhanceOk');
     const fresh = profile.update((p) => {
       p.enhTries++;
       if (res.outcome === 'success') { p.enhWins++; p.maxEnh = Math.max(p.maxEnh, res.to); }
@@ -5187,13 +5361,18 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
       if (ev.kind === 'round') ui.round.textContent = `第 ${ev.round} / ${Battle.MAX_ROUNDS} 回合`;
       if (!ui.skipped()) {
         const target = ui.el(ev.actor === 'A' ? 'B' : 'A'), actor = ev.actor ? ui.el(ev.actor) : null;
-        if (ev.kind === 'attack') { floatText(target, '-' + ev.dmg, ev.crit ? 'crit' : ''); hitFx(target, 'shake'); }
+        if (ev.kind === 'attack') { floatText(target, '-' + ev.dmg, ev.crit ? 'crit' : ''); hitFx(target, 'shake'); sfx(ev.crit ? 'crit' : 'hit'); }
+        if (ev.kind === 'bleed') sfx('bleed');
         if (ev.kind === 'skill') {
+          sfx('skill', ev.awakened);
+          if (ev.stun) setTimeout(() => sfx('stun'), 180);
+          else if (ev.heal) setTimeout(() => sfx('heal'), 200);
+          else if (ev.shieldGain || /擊碎 \d+ 護盾/.test(ev.text)) setTimeout(() => sfx('shield'), 160);
           hitFx(actor, 'flash');
           if (ev.dmg) { floatText(target, '-' + ev.dmg, 'crit'); hitFx(target, 'shake'); }
           if (ev.heal) setTimeout(() => floatText(actor, '+' + ev.heal, 'heal'), 250);
         }
-        if (ev.kind === 'dodge') floatText(target, '閃避', 'miss');
+        if (ev.kind === 'dodge') { floatText(target, '閃避', 'miss'); sfx('dodge'); }
         if (ev.kind === 'stunned') floatText(actor, '暈眩', 'miss');
         await sleep(ev.kind === 'round' ? 260 : ev.kind === 'end' ? 0 : 620);
       }
@@ -5265,6 +5444,8 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     const copyBtn = '<button class="share-inline" type="button" data-copy-battle="npc">複製戰鬥過程</button>';
     banner.innerHTML = `${label}<small>${esc(detail)}</small>${xpLineHTML(xp, lv, now)}${bookLine(p)}${streakLine}${dailyLine}${rule}<span class="banner-actions">${copyBtn}${shareLine}</span>`;
     banner.hidden = false;
+    sfx(result === 'win' ? 'win' : result === 'loss' ? 'lose' : 'draw');
+    if (p.milestone) setTimeout(() => sfx('milestone'), 700);
     if (lv.after > lv.before) toast(`熟練度提升至 Lv.${lv.after}！`);
     celebrate(p.fresh);
     renderStreakBar();
@@ -5305,7 +5486,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
       p.maxLevel = Math.max(p.maxLevel, state.weapon.mastery.level);
       if (book) p.books++;
     });
-    if (book) { toast('獲得技能書 ×1！'); renderLibrary(); }
+    if (book) { toast('獲得技能書 ×1！'); renderLibrary(); setTimeout(() => sfx('book'), 900); }
     const milestone = result === 'win' ? Streak.milestone(rec.streak) : null;
     if (milestone) toast(`${milestone.n} 連勝！「${milestone.name}」`);
     return { xp, lv, now: state.weapon, fresh, milestone, book };
@@ -5327,7 +5508,10 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
   $('#btn-skip').addEventListener('click', () => { state.skip = true; });
   $('#btn-retry').addEventListener('click', () => { if (state.mustSwitch) return; state.battle = null; startBattle(); });
   $('#btn-new-opp').addEventListener('click', () => {
-    if (newOpponent(state.mustSwitch ? 'forced' : 'manual')) toast(encounterToast(state.opponent));
+    if (newOpponent(state.mustSwitch ? 'forced' : 'manual')) {
+      toast(encounterToast(state.opponent));
+      if (state.opponent.encounter && state.opponent.encounter.id === 'elite') sfx('alert');
+    }
   });
   $('#btn-back-card').addEventListener('click', () => show('result'));
 
@@ -5509,7 +5693,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     if (!room.skip) {
       const cd = $('#room-countdown');
       cd.hidden = false;
-      for (const n of ['3', '2', '1']) { cd.textContent = n; await sleep(650); if (room.skip) break; }
+      for (const n of ['3', '2', '1']) { cd.textContent = n; sfx('beep', n === '1'); await sleep(650); if (room.skip) break; }
       cd.hidden = true;
     }
     await playEvents(m.result, { el: sideEl, log, round: $('#room-log-round'), skipped: () => room.skip });
@@ -5532,6 +5716,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
       banner.innerHTML = `${w ? esc(w.owner) + ' 獲勝' : '平手'}<small>觀戰結束</small>`;
     }
     banner.insertAdjacentHTML('beforeend', '<span class="banner-actions"><button class="share-inline" type="button" data-copy-battle="room">複製戰鬥過程</button></span>');
+    if (v.isPlayer) sfx(commit.result === 'win' ? 'win' : commit.result === 'loss' ? 'lose' : 'draw');
     banner.hidden = false;
     room.done = Math.max(room.done, m.done);
     room.playing = false;
@@ -5717,6 +5902,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
 
   /* ---------------- 啟動 ---------------- */
   nickInput.value = state.nickname;
+  renderSoundBtn();
   renderSamples();
   updateCounters();
   // 武器預設保存在本機：開啟時直接回到上次的武器卡（只存種子碼，不存名字）
