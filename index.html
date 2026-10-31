@@ -268,6 +268,8 @@ body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-a
 .bar span { display: block; height: 100%; width: var(--w, 0%); border-radius: inherit; background: linear-gradient(90deg, var(--c1), var(--c2)); transition: width 0.8s cubic-bezier(0.2, 0.8, 0.2, 1); }
 .skill { padding: 12px 14px; border-radius: 12px; background: rgba(157, 114, 255, 0.08); border: 1px solid rgba(157, 114, 255, 0.3); display: grid; gap: 4px; }
 .skill-label { font-size: 12px; color: var(--violet); letter-spacing: 0.16em; }
+.build-badge { display: inline-block; margin-left: 6px; padding: 0 8px; border-radius: 99px; font-size: 12px; line-height: 20px; vertical-align: 1px; color: #d6fff0; background: rgba(79, 220, 172, 0.16); border: 1px solid rgba(79, 220, 172, 0.5); }
+.build-badge.x { color: #2a0f05; background: linear-gradient(90deg, #ffb36b, #ff6e8c); border-color: transparent; font-weight: 900; }
 .skill-tier { display: inline-block; margin-left: 6px; padding: 0 7px; border-radius: 99px; font-family: var(--f-latin); font-size: 11px; letter-spacing: 0.04em; line-height: 18px; vertical-align: 1px; }
 .skill-tier.t1 { background: #f2c14e; color: #2a1d05; }
 .skill-tier.t2 { background: #9fb0bf; color: #141821; }
@@ -1252,6 +1254,24 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
 
   /* ---------- 第三版：技能階位與複合技能 ---------- */
   // 階位：T1 原始威力；T2 威力 90%、發動率 +3%；T3 威力 75%、發動率 +6%。品質越高越容易出 T1
+  // 武器流派：均衡最常見；五種特化流派各有明顯長短；「極」流派是極端特化，非常稀有（合計約 3%）
+  //   m：數值倍率｜skill：技巧流派的技能加成（發動率 +chance、威力 ×k）
+  const BUILDS = [
+    { id: 'balanced', name: '均衡', weight: 52, m: { atk: 1.03, def: 1.03, spd: 1.03 } },
+    { id: 'berserk', name: '狂攻', weight: 9, m: { atk: 1.15, def: 0.8 } },
+    { id: 'fortress', name: '鐵壁', weight: 9, m: { atk: 0.88, def: 1.4, spd: 0.92 } },
+    { id: 'swift', name: '疾風', weight: 9, m: { spd: 1.4, atk: 0.98, def: 0.9 } },
+    { id: 'keen', name: '會心', weight: 8, m: { crit: 2.2, atk: 1.03, def: 0.92 } },
+    { id: 'arcane', name: '技巧', weight: 8, m: { atk: 0.95, def: 0.94, spd: 0.98 }, skill: { chance: 0.06, k: 1.12 } },
+    { id: 'x_berserk', name: '極・狂攻', weight: 0.6, extreme: true, m: { atk: 1.55, def: 0.45 } },
+    { id: 'x_fortress', name: '極・鐵壁', weight: 0.6, extreme: true, m: { atk: 0.76, def: 1.95, spd: 0.75 } },
+    { id: 'x_swift', name: '極・疾風', weight: 0.6, extreme: true, m: { spd: 2.4, atk: 1.05, def: 0.7 } },
+    { id: 'x_keen', name: '極・會心', weight: 0.6, extreme: true, m: { crit: 4.0, atk: 1.15, def: 0.7 } },
+    { id: 'x_arcane', name: '極・技巧', weight: 0.6, extreme: true, m: { atk: 0.88, def: 0.85, spd: 0.95 }, skill: { chance: 0.16, k: 1.38 } },
+  ];
+
+
+
   const SKILL_TIERS = [{ t: 1, k: 1, c: 0 }, { t: 2, k: 0.9, c: 0.03 }, { t: 3, k: 0.75, c: 0.06 }];
   const TIER_WEIGHTS = [[20, 40, 40], [30, 40, 30], [40, 40, 20], [50, 35, 15], [60, 30, 10], [70, 25, 5]];
   // 複合技能：主效果威力 ×0.78，再附帶一個副效果（威力約為單一技能的 60%～70%）
@@ -1469,6 +1489,19 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     let skill = makeSkill(R('skill'), type, element, rarityIndex, special, rarity.skillTier, D.EFFECTS);
     // 第三版起：技能有階位（T1／T2／T3），並可能是複合技能（使用獨立的亂數流，不影響其他欄位）
     if (ver >= 3 && !special) skill = refineSkillV3(skill, R('skillx'), type, element, rarityIndex, rarity.skillTier, D.EFFECTS);
+    // 第三版起：武器流派（數值走向）。極端流派非常稀有
+    let build = null;
+    if (ver >= 3) {
+      const b = R('build').weighted(BUILDS);
+      build = { id: b.id, name: b.name, extreme: !!b.extreme };
+      if (b.m) for (const key of Object.keys(b.m)) stats[key] = key === 'crit' ? clamp(Math.round(stats[key] * b.m[key]), 1, 75) : Math.max(1, Math.round(stats[key] * b.m[key]));
+      if (b.skill) {
+        skill = scaleMag(skill, b.skill.k);
+        if (skill.rider) skill.rider = scaleMag(skill.rider, b.skill.k);
+        skill.chance = round2(clamp(skill.chance + b.skill.chance, 0.1, 0.6));
+        skill.desc = describeSkill(skill);
+      }
+    }
     const power = computePower(stats, skill);
 
     // 稱號：依最突出的數值
@@ -1515,6 +1548,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
       mastery: masteryInfo(0),
       title,
       story,
+      build,
     };
   }
 
@@ -1524,7 +1558,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     const e = (w.enh && w.enh.level) || 0;
     return [
       `【名武錄】${w.owner} 的專屬武器`,
-      `◆ ${w.name}${enhTag(w)}（${w.rarity.name}・${w.type.name}・${w.element.name}屬性）`,
+      `◆ ${w.name}${enhTag(w)}（${w.rarity.name}・${w.type.name}・${w.element.name}屬性${w.build && w.build.id !== 'balanced' ? `・${w.build.name}流` : ''}）`,
       `攻擊 ${w.stats.atk}｜防禦 ${w.stats.def}｜速度 ${w.stats.spd}｜暴擊 ${w.stats.crit}%`,
       `技能「${w.skill.name}」${w.skill.tier || w.skill.focus || w.skill.rider || w.skill.trigger ? `（${[w.skill.tier ? 'T' + w.skill.tier : '', w.skill.focus ? '專精' : '', w.skill.rider ? '複合' + (w.skill.rider.cond ? '（' + RIDER_COND_NAMES[w.skill.rider.cond] + '）' : '') : '', w.skill.trigger ? TRIGGER_NAMES[w.skill.trigger] : ''].filter(Boolean).join('・')}）` : ''}：${w.skill.desc}`,
     ].concat(w.skill2 ? [`覺醒技能「${w.skill2.name}」：${w.skill2.desc}`] : []).concat([
@@ -1606,9 +1640,31 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     };
   }
   const SHIELD_RATIO = 0.85;
-  function masterSkill(base, info, chanceShare) {
+  // 平衡調整（2026-10-31 全面檢視）：只調整「遊戲中實際使用的數值」，武器本體與種子碼不變。
+  // 必殺偏強、削弱／吸血／碎甲／斬殺偏弱；回春的回復量改為也吃一半熟練度加成。
+  const EFFECT_TUNE = {
+    focus: { mult: 0.86 },
+    pierce: { mult: 1.05 },
+    weaken: { weaken: 1.45, mult: 1.05 },
+    drain: { heal: 1.6, mult: 1.08 },
+    sunder: { sunder: 1.3 },
+    execute: { exec: 1.4, mult: 1.04 },
+    bleed: { bleed: 1.15 },
+  };
+  function tuneSkill(base) {
+    const t = EFFECT_TUNE[base.effect];
+    if (!t) return base;
+    const x = Object.assign({}, base);
+    for (const k of Object.keys(t)) if (x[k] != null) x[k] = round2(x[k] * t[k]);
+    return x;
+  }
+  function masterSkill(base0, info, chanceShare) {
+    const base = tuneSkill(base0);
     const k = 1 + info.dmgBonus * (base.focus ? FOCUS_MASTERY : 1);
     const sk = Object.assign({}, base);
+    // 狀態類數值也吃部分熟練度加成（否則高熟練時被純傷害技能拉開差距）
+    if (sk.regen != null) sk.regen = round2(sk.regen * (1 + info.dmgBonus * 1.0));
+    for (const key of ['weaken', 'sunder', 'exec']) if (sk[key] != null) sk[key] = round2(sk[key] * (1 + info.dmgBonus * 0.4));
     sk.chance = round2(clamp(base.chance + info.chanceBonus * chanceShare, 0, 0.6));
     if (sk.mult != null) sk.mult = round2(base.mult * k);
     // 蓄力技能不看發動率：熟練度的發動率加成改為威力加成
@@ -1633,7 +1689,8 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
   // 回傳套用熟練度（與強化等級，若有指定）後的武器（不改動原物件）
   // 順序固定：強化（數值、覺醒技能）→ 熟練度（技能倍率）。enh 省略時沿用武器身上的強化結果。
   function applyMastery(w, xp, levelOverride, enh) {
-    if (enh != null) w = applyEnhance(w, enh);
+    // 強化（含類型平衡調整）一律先套用；武器身上已有強化結果且沒指定時沿用
+    if (enh != null || !w.enh) w = applyEnhance(w, enh || 0);
     const info = masteryInfo(xp, levelOverride);
     const base = w.baseSkill || w.skill;
     const sk = masterSkill(base, info, 1);
@@ -1655,7 +1712,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     return Math.max(5, Math.round(base * ratio * bonus));
   }
 
-  MWL.Forge = { FOCUS_BASE, FOCUS_MASTERY, forgeWeapon, forgeFromSeed, weaponToText, computePower, describeSkill, ANON, SKILL_TIERS, COMPOUND_RATE, TRIGGERS, TRIGGER_NAMES, RIDER_CONDS, RIDER_COND_NAMES };
+  MWL.Forge = { BUILDS, FOCUS_BASE, FOCUS_MASTERY, forgeWeapon, forgeFromSeed, weaponToText, computePower, describeSkill, ANON, SKILL_TIERS, COMPOUND_RATE, TRIGGERS, TRIGGER_NAMES, RIDER_CONDS, RIDER_COND_NAMES };
   MWL.SeedCode = { encode: encodeSeedCode, decode: decodeSeedCode };
   MWL.Mastery = { applyMastery, masteryInfo, levelFromXp, xpForLevel, battleXp, streakBonus, MAX: MASTERY_MAX, DMG_PER_LV: MASTERY_DMG_PER_LV };
 
@@ -1685,7 +1742,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     dao:      { atk: 0.02,  def: 0.008, spd: 0.014, crit: 0.25 },
     axe:      { atk: 0.022, def: 0.012, spd: 0.008, crit: 0.2 },
     spear:    { atk: 0.017, def: 0.01,  spd: 0.018, crit: 0.15 },
-    shield:   { atk: 0.012, def: 0.017, spd: 0.009, crit: 0.1 },
+    shield:   { atk: 0.012, def: 0.015, spd: 0.009, crit: 0.1 },
     staff:    { atk: 0.019, def: 0.01,  spd: 0.012, crit: 0.3 },
     bow:      { atk: 0.018, def: 0.008, spd: 0.016, crit: 0.25 },
     daggers:  { atk: 0.015, def: 0.008, spd: 0.02,  crit: 0.3 },
@@ -1736,17 +1793,26 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     return s;
   }
 
+  // 類型平衡調整（2026-10-31）：只影響遊戲中的數值，生成資料與種子碼不變
+  const TYPE_TUNE = { staff: { atk: 1.07, def: 1.05 }, bow: { atk: 0.96 }, gauntlet: { atk: 1.04 }, dao: { atk: 1.03 } };
+  function tuneStats(w, base) {
+    const t = TYPE_TUNE[w.type && w.type.id];
+    const s = Object.assign({}, base);
+    if (t) for (const key of Object.keys(t)) s[key] = Math.round(s[key] * t[key]);
+    return s;
+  }
   // 回傳套用強化等級後的武器（數值成長、+20 覺醒技能）；不改動原物件
   function applyEnhance(w, lv) {
     const info = enhanceInfo(lv);
     const base = w.baseStats || w.stats;
     const g = growthOf(w), L = info.level;
     const k = (ENH_BY_RARITY[w.rarity.index] || ENH_BY_RARITY[2]).grow;
-    const stats = !L ? Object.assign({}, base) : {
-      atk: Math.round(base.atk * (1 + g.atk * k * L)),
-      def: Math.round(base.def * (1 + g.def * k * L)),
-      spd: Math.round(base.spd * (1 + g.spd * k * L)),
-      crit: clamp(Math.round(base.crit + g.crit * k * L), 1, 75),
+    const tuned = tuneStats(w, base);
+    const stats = !L ? tuned : {
+      atk: Math.round(tuned.atk * (1 + g.atk * k * L)),
+      def: Math.round(tuned.def * (1 + g.def * k * L)),
+      spd: Math.round(tuned.spd * (1 + g.spd * k * L)),
+      crit: clamp(Math.round(tuned.crit + g.crit * k * L), 1, 75),
     };
     const out = Object.assign({}, w, { stats, baseStats: base, enh: info });
     out.baseSkill2 = info.awakened ? awakenSkill(w) : null;
@@ -1850,7 +1916,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
 
   MWL.Enhance = {
     MAX: ENH_MAX, RATE: ENH_RATE, CURSE_BONUS, CURSE_MAX, CURSE_BREAK, PITY: ENH_PITY, PITY_MAX: ENH_PITY_MAX, TIER_BONUS: ENH_TIER_BONUS, GROWTH, REASONS: ENH_REASONS,
-    BY_RARITY: ENH_BY_RARITY, AWAKEN_FLOOR, MAT_MIN_LV, MAT_LV_BONUS,
+    BY_RARITY: ENH_BY_RARITY, TYPE_TUNE, AWAKEN_FLOOR, MAT_MIN_LV, MAT_LV_BONUS,
     info: enhanceInfo, apply: applyEnhance, delta: enhanceDelta, odds: enhanceOdds, roll: rollEnhance, checkMaterial, awakenSkill,
     createStore: createEnhanceStore, perform: performEnhance,
   };
@@ -3308,8 +3374,10 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
   function createSharedLeaderboard(db, myId, canWrite) {
     const col = db.collection('board');
     const toRows = (snap) => sortBoard(snap.docs.map((d) => {
-      const r = boardRow(d.id, d.data());
-      return r && Object.assign(r, { source: 'shared', isMe: d.id === myId });
+      try {
+        const r = boardRow(d.id, d.data());
+        return r && Object.assign(r, { source: 'shared', isMe: d.id === myId });
+      } catch (e) { return null; } // 單一列有問題時略過
     }).filter(Boolean));
     return {
       info: { source: 'shared', shared: true, label: '這個頁面上的真實玩家' },
@@ -3886,8 +3954,11 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     const toRows = (snap, mode) => {
       const rows = [];
       snap.forEach((child) => {
-        const r = L.boardRow(child.key, child.val());
-        if (r) rows.push(Object.assign(r, { source: 'cloud', isMe: child.key === uid }));
+        // 單一列資料有問題時略過那一列，不影響整個排行榜
+        try {
+          const r = L.boardRow(child.key, child.val());
+          if (r) rows.push(Object.assign(r, { source: 'cloud', isMe: child.key === uid }));
+        } catch (e) { console.warn('[排行榜] 略過無法解析的資料', child.key, e); }
       });
       return L.sortBoard(rows, mode);
     };
@@ -3901,7 +3972,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
         const key = 'board' + (++seq);
         hold(db, key);
         const q = query(mode);
-        const handler = (snap) => cb(toRows(snap, mode));
+        const handler = (snap) => { let rows; try { rows = toRows(snap, mode); } catch (e) { if (onError) onError(e); return; } cb(rows); };
         q.on('value', handler, (e) => onError && onError(e));
         return () => { q.off('value', handler); release(db, key); };
       },
@@ -4306,6 +4377,11 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     return '傳承';
   }
 
+  // 武器流派標記（均衡不顯示）
+  function buildBadge(w) {
+    const b = w.build;
+    return b && b.id !== 'balanced' ? ` <span class="build-badge ${b.extreme ? 'x' : ''}">${esc(b.name)}流</span>` : '';
+  }
   // 技能階位與複合標記
   function skillTags(sk) {
     const trig = sk.trigger && Forge.TRIGGER_NAMES[sk.trigger];
@@ -4349,7 +4425,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
           </div>
           <div class="art">${Art.renderWeaponSVG(w, { idPrefix: 'card' })}</div>
           <h2 class="weapon-name">${esc(w.name)}${enhBadge}</h2>
-          <p class="weapon-meta">${esc(w.type.name)}・${esc(w.element.name)}屬性・${esc(w.rarity.name)}</p>
+          <p class="weapon-meta">${esc(w.type.name)}・${esc(w.element.name)}屬性・${esc(w.rarity.name)}${buildBadge(w)}</p>
           <div class="owner">
             ${sealHTML(w.owner)}
             <div class="owner-text">
@@ -4436,7 +4512,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
       return `<li class="lib-item ${on ? 'on' : ''}" style="--r-color:${w.rarity.color}">
         ${Art.renderWeaponSVG(w, { idPrefix: 'lib' + x.code.replace(/-/g, '').slice(-6), size: 140 })}
         <span class="lib-name">${esc(w.name)}${w.enh && w.enh.level ? ` <span class="lib-enh">+${w.enh.level}</span>` : ''}</span>
-        <span class="lib-meta"><b>${esc(w.rarity.name)}</b>・Lv.${w.mastery.level}・戰力 ${w.power}${rec.bestStreak ? `・最高 ${rec.bestStreak} 連勝` : ''}</span>
+        <span class="lib-meta"><b>${esc(w.rarity.name)}</b>${w.build && w.build.id !== 'balanced' ? `・${esc(w.build.name)}流` : ''}・Lv.${w.mastery.level}・戰力 ${w.power}${rec.bestStreak ? `・最高 ${rec.bestStreak} 連勝` : ''}</span>
         ${books && w.mastery.level < Mastery.MAX ? `<button class="btn btn-book" type="button" data-book="${esc(x.code)}">📖 技能書 Lv.${w.mastery.level} → ${w.mastery.level + 1}</button>` : ''}
         ${on ? '<span class="lib-on">裝備中</span>' : `<div class="lib-actions"><button class="btn" type="button" data-equip="${esc(x.code)}">裝備</button><button class="btn btn-ghost btn-del" type="button" data-del="${esc(x.code)}" aria-label="從武器庫移除 ${esc(w.name)}">移除</button></div>`}
       </li>`;
@@ -4877,7 +4953,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     ctx.textAlign = 'center';
     y += 52;
     ctx.fillStyle = rc; ctx.font = `500 32px ${FONT_BODY}`;
-    ctx.fillText(`${w.type.name}・${w.element.name}屬性・${w.rarity.name}`, W / 2, y);
+    ctx.fillText(`${w.type.name}・${w.element.name}屬性・${w.rarity.name}${w.build && w.build.id !== 'balanced' ? `・${w.build.name}流` : ''}`, W / 2, y);
     y += 56;
     ctx.fillStyle = '#efe7d4'; fitFont(ctx, `持有者  ${w.owner}`, 700, 34, FONT_BODY, W - PAD * 2, 22);
     ctx.fillText(`持有者  ${w.owner}`, W / 2, y);
@@ -5530,9 +5606,32 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     $('#sort-power').setAttribute('aria-selected', String(boardMode === 'power'));
     $('#sort-streak').setAttribute('aria-selected', String(boardMode === 'streak'));
     if (boardUnsub) { boardUnsub(); boardUnsub = null; }
-    boardUnsub = board.subscribe((rows) => drawBoardRows(Leaderboard.sortBoard(rows, boardMode)),
-      () => { $('#board-list').innerHTML = '<li class="empty">排行榜暫時無法讀取，請稍後再試。</li>'; }, boardMode);
+    // 一定要有畫面：先顯示讀取中；資料遲遲不來或出錯時，顯示原因與重新整理按鈕（不再整片空白）
+    const list = $('#board-list');
+    list.innerHTML = '<li class="empty">排行榜讀取中…</li>';
+    $('#board-count').textContent = '';
+    const myBoard = board;
+    let got = false;
+    const fail = (msg, err) => {
+      if (err) console.error('[排行榜]', err);
+      if (board !== myBoard || state.view !== 'board') return;
+      list.innerHTML = `<li class="empty">${esc(msg)}${err && (err.code || err.message) ? `<br><small style="color:var(--faint)">（${esc(String(err.code || err.message)).slice(0, 80)}）</small>` : ''}<br><button class="btn" type="button" data-board-retry>重新讀取</button></li>`;
+    };
+    clearTimeout(renderBoard._t);
+    renderBoard._t = setTimeout(() => {
+      if (got || board !== myBoard) return;
+      // 即時訂閱遲遲沒有回應：改用一次性讀取
+      Promise.race([Promise.resolve().then(() => myBoard.getTop(100, boardMode)), sleep(8000).then(() => { throw Object.assign(new Error('timeout'), { code: '連線逾時' }); })]).then((rows) => { if (!got) { got = true; drawBoardRows(Leaderboard.sortBoard(rows || [], boardMode)); } })
+        .catch((e) => fail('排行榜讀取逾時，請檢查網路後重新讀取。', e));
+    }, 9000);
+    try {
+      boardUnsub = myBoard.subscribe((rows) => {
+        got = true;
+        try { drawBoardRows(Leaderboard.sortBoard(rows || [], boardMode)); } catch (e) { fail('排行榜顯示失敗。', e); }
+      }, (e) => { got = true; fail('排行榜暫時無法讀取，請稍後再試。', e); }, boardMode);
+    } catch (e) { fail('排行榜暫時無法讀取，請稍後再試。', e); }
   }
+  document.addEventListener('click', (e) => { if (e.target.closest('[data-board-retry]')) renderBoard(); });
   $('#sort-power').addEventListener('click', () => { boardMode = 'power'; renderBoard(); });
   $('#sort-streak').addEventListener('click', () => { boardMode = 'streak'; renderBoard(); });
   function renderAchievements() {
