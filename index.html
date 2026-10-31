@@ -530,6 +530,12 @@ body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-a
 .daily-name { font-weight: 700; overflow-wrap: anywhere; }
 .daily-meta { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
 .daily .btn { grid-column: 1 / -1; min-height: 46px; }
+.daily.tower { border-color: rgba(242, 193, 78, 0.5); background: linear-gradient(120deg, rgba(242, 193, 78, 0.12), var(--panel) 60%); }
+.daily.tower .daily-label { color: var(--gold); }
+.daily.tower.boss { border-color: rgba(255, 110, 140, 0.6); background: linear-gradient(120deg, rgba(255, 110, 140, 0.14), var(--panel) 60%); }
+.tower-actions { grid-column: 1 / -1; display: flex; gap: 8px; }
+.tower-actions .btn { flex: 1; min-height: 46px; }
+.btn-evo { min-height: 38px; padding: 0 8px; font-size: 13px; border-color: rgba(255, 143, 168, 0.6); color: #ffc2cf; }
 .daily.done { border-color: rgba(123, 224, 166, 0.45); background: linear-gradient(120deg, rgba(123, 224, 166, 0.1), var(--panel) 60%); }
 .board-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; border-radius: 12px; background: var(--ink); border: 1px solid var(--line-soft); }
 .board-tabs button { min-height: 42px; border-radius: 9px; border: 0; background: none; color: var(--muted); font-weight: 700; }
@@ -748,6 +754,7 @@ button.mat:hover, button.mat:focus-visible { border-color: #ffe08a; outline: non
     </div>
     <div id="battle-main" class="view">
       <div class="daily" id="daily-card"></div>
+      <div class="daily tower" id="tower-card"></div>
       <div class="streak-bar" id="streak-bar"></div>
       <div class="arena">
         <div class="fighter" id="fighter-A"></div>
@@ -1446,9 +1453,47 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
 
   function forgeVer(forge) { return (forge | 0) === 0 ? NAME_FIRST_VER : CURRENT_VER; }
 
+  /* ---------- 副本限定武器（試煉之塔魔王掉落，無法用種子碼繼承） ---------- */
+  const TOWER_WEAPONS = {
+    1: { name: '塔守的斷劍', type: 'sword', element: 'light', title: '守塔千年的斷劍之主',
+      skill: { effect: 'execute', name: '塔守·最後的審判', chance: 0.32, mult: 1.6, exec: 1.6, tier: 1, focus: true },
+      story: '試煉之塔第十層的守衛，在千年的守望中折斷了劍身。斷口至今仍閃著聖光，只認可能夠登上塔頂的人。' },
+    2: { name: '雷鳴戰鼓', type: 'hammer', element: 'thunder', title: '喚醒雷霆的鼓手',
+      skill: { effect: 'stun', name: '戰鼓·萬雷齊鳴', chance: 0.3, mult: 1.45, tier: 1, rider: { effect: 'bleed', bleed: 0.28 } },
+      story: '第二十層的魔像以雷霆為心臟。牠倒下時留下這面戰鼓，每一次敲擊都會讓敵人的骨頭跟著震顫。' },
+    3: { name: '深淵之鑰', type: 'tome', element: 'shadow', title: '開啟深淵的人',
+      skill: { effect: 'silence', name: '深淵·萬籟俱寂', chance: 0.33, mult: 1.5, turns: 2, tier: 1, rider: { effect: 'drain', heal: 0.45 } },
+      story: '封印術士守護的禁忌之書。翻開它的人能讓對手忘記一切招式，代價是書頁會一點一點吞噬光明。' },
+  };
+  function forgeTowerWeapon(n, holder) {
+    const def = TOWER_WEAPONS[n];
+    if (!def) throw new Error('bad tower weapon');
+    const seed = TOWER_SEED_BASE + n;
+    const type = V3_TYPES.find((t) => t.id === def.type), el = V2_ELEMENTS.find((e) => e.id === def.element);
+    const rarity = RARITIES[4], ri = 4;
+    const k = rarity.mult * 1.1;
+    const stats = {
+      atk: Math.round(type.base.atk * k), def: Math.round(type.base.def * k), spd: Math.round(type.base.spd * k),
+      crit: clamp(Math.round(type.base.crit * (0.85 + ri * 0.15) * 1.1), 1, 60),
+    };
+    const skill = Object.assign({}, def.skill, def.skill.rider ? { rider: Object.assign({}, def.skill.rider) } : {});
+    skill.desc = describeSkill(skill);
+    const owner = normalizeName(holder) || ANON;
+    return {
+      algo: 'MWT', ver: TOWER_VER, owner, seed, code: 'MWT-' + n, origin: { kind: 'tower' }, tower: n,
+      name: def.name, type: { id: type.id, name: type.name }, special: null,
+      rarity: { id: rarity.id, name: rarity.name, color: rarity.color, index: ri },
+      element: { id: el.id, name: el.name, c1: el.c1, c2: el.c2 },
+      stats, skill, baseSkill: skill, basePower: computePower(stats, skill), power: computePower(stats, skill),
+      mastery: masteryInfo(0), title: rarity.epithet.replace('的', '') + '・' + def.title,
+      story: `${def.story}如今「${owner}」之名被寫入名錄，它是試煉之塔的證明。`, build: null,
+    };
+  }
+
   // 由種子鑄造：種子碼繼承、系統對手都走這裡。相同種子 → 相同武器本體
   function forgeFromSeed(seed, holder, ver) {
     ver = normVer(ver);
+    if (ver === TOWER_VER) return forgeTowerWeapon(Math.floor(Number(seed)) - TOWER_SEED_BASE, holder);
     const D = DATA[ver];
     const { TYPES, ELEMENTS, SPECIALS, MATERIAL_LOW, MATERIAL_MID, MIDS, FUNNY_PREFIXES, TITLES, FUNNY_TITLES,
       ERAS, SMITHS, FORGE_ACTS, DEEDS, BONDS, FUNNY_ERAS, FUNNY_ORIGINS, FUNNY_BONDS } = D;
@@ -1593,10 +1638,13 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     return n;
   }
   // 版本記在前綴：MW-（第一版）／MW2-（第二版），檢查碼也依版本不同
-  function normVer(ver) { return ver === 1 || ver === 2 ? ver : CURRENT_VER; }
+  function normVer(ver) { return ver === 1 || ver === 2 || ver === TOWER_VER ? ver : CURRENT_VER; }
+  // 副本限定武器：代碼 MWT-<編號>，用保留的種子區段，不能被種子碼繼承
+  const TOWER_VER = 9, TOWER_SEED_BASE = 9000000000000000;
   function seedCheck(body, ver) { return toB32(cyrb53((ver === 1 ? 'MWC|' : 'MWC' + ver + '|') + body) % 1024, 2); }
   function encodeSeedCode(seed, ver) {
     ver = normVer(ver);
+    if (ver === TOWER_VER) return 'MWT-' + (seed - TOWER_SEED_BASE);
     const body = toB32(seed, 11);
     const c = seedCheck(body, ver);
     return `${ver === 1 ? 'MW' : 'MW' + ver}-${body.slice(0, 4)}-${body.slice(4, 8)}-${body.slice(8)}${c}`;
@@ -1604,6 +1652,12 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
   function decodeSeedCode(raw) {
     let t = String(raw == null ? '' : raw).toUpperCase().replace(/[\s\-_.·・]/g, '');
     if (!t) return { ok: false, code: 'empty', error: '請輸入種子碼。' };
+    const tm = /^MWT(\d{1,2})$/.exec(t);
+    if (tm) {
+      const n = +tm[1];
+      if (!TOWER_WEAPONS[n]) return { ok: false, code: 'range', error: '沒有這把副本武器。' };
+      return { ok: true, seed: TOWER_SEED_BASE + n, ver: TOWER_VER, code: 'MWT-' + n, tower: n };
+    }
     let vers = [3, 2, 1];
     if (t.length === 16 && /^MW[23]/.test(t)) { vers = [+t[2]]; t = t.slice(3); }
     else if (t.length === 15 && t.startsWith('MW')) { vers = [1]; t = t.slice(2); }
@@ -1692,8 +1746,9 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
   }
   // 回傳套用熟練度（與強化等級，若有指定）後的武器（不改動原物件）
   // 順序固定：強化（數值、覺醒技能）→ 熟練度（技能倍率）。enh 省略時沿用武器身上的強化結果。
-  function applyMastery(w, xp, levelOverride, enh) {
-    // 強化（含類型平衡調整）一律先套用；武器身上已有強化結果且沒指定時沿用
+  function applyMastery(w, xp, levelOverride, enh, evo) {
+    // 順序：進化（品質提升）→ 強化（含類型平衡調整）→ 熟練度
+    if (evo && !w.evolved) w = applyEvolve(w);
     if (enh != null || !w.enh) w = applyEnhance(w, enh || 0);
     const info = masteryInfo(xp, levelOverride);
     const base = w.baseSkill || w.skill;
@@ -1805,6 +1860,27 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     if (t) for (const key of Object.keys(t)) s[key] = Math.round(s[key] * t[key]);
     return s;
   }
+  // 進化：品質提升一階（最多到傳說；副本武器與已進化的武器不能進化）。數值與技能依品質倍率等比例提升
+  const EVO_MAX_RARITY = 4;
+  function canEvolve(w) { return !w.tower && !w.evolved && w.rarity.index < EVO_MAX_RARITY; }
+  function applyEvolve(w) {
+    if (!canEvolve(w)) return w;
+    const r0 = RARITIES[w.rarity.index], r1 = RARITIES[w.rarity.index + 1];
+    const base = w.baseStats || w.stats, km = r1.mult / r0.mult;
+    const kc = (0.85 + (w.rarity.index + 1) * 0.15) / (0.85 + w.rarity.index * 0.15);
+    const stats = { atk: Math.round(base.atk * km), def: Math.round(base.def * km), spd: Math.round(base.spd * km), crit: clamp(Math.round(base.crit * kc), 1, 75) };
+    const ks = r1.skillTier / r0.skillTier;
+    const sk0 = w.baseSkill || w.skill;
+    const sk = scaleMag(sk0, ks);
+    if (sk.rider) sk.rider = scaleMag(sk.rider, ks);
+    sk.desc = describeSkill(sk);
+    return Object.assign({}, w, {
+      stats, skill: sk, baseSkill: sk, evolved: true, baseRarity: w.rarity,
+      rarity: { id: r1.id, name: r1.name, color: r1.color, index: w.rarity.index + 1 },
+      basePower: computePower(stats, sk),
+    });
+  }
+
   // 回傳套用強化等級後的武器（數值成長、+20 覺醒技能）；不改動原物件
   function applyEnhance(w, lv) {
     const info = enhanceInfo(lv);
@@ -1921,7 +1997,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
   MWL.Enhance = {
     MAX: ENH_MAX, RATE: ENH_RATE, CURSE_BONUS, CURSE_MAX, CURSE_BREAK, PITY: ENH_PITY, PITY_MAX: ENH_PITY_MAX, TIER_BONUS: ENH_TIER_BONUS, GROWTH, REASONS: ENH_REASONS,
     BY_RARITY: ENH_BY_RARITY, TYPE_TUNE, AWAKEN_FLOOR, MAT_MIN_LV, MAT_LV_BONUS,
-    info: enhanceInfo, apply: applyEnhance, delta: enhanceDelta, odds: enhanceOdds, roll: rollEnhance, checkMaterial, awakenSkill,
+    info: enhanceInfo, apply: applyEnhance, canEvolve, applyEvolve, EVO_MAX_RARITY, delta: enhanceDelta, odds: enhanceOdds, roll: rollEnhance, checkMaterial, awakenSkill,
     createStore: createEnhanceStore, perform: performEnhance,
   };
 
@@ -2904,6 +2980,8 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     const A = makeFighter(weaponA, 'A'), B = makeFighter(weaponB, 'B');
     const events = [];
     const push = (e) => events.push(Object.assign(e, { hpA: A.hp, hpB: B.hp, shieldA: A.shield, shieldB: B.shield }));
+    // 試煉之塔魔王特性（只有帶 bossTrait 的武器才有，一般對戰完全不受影響）
+    for (const [f, o, w] of [[A, B, weaponA], [B, A, weaponB]]) if (w.bossTrait) applyBossTrait(f, o, w.bossTrait, push);
 
     let round = 0;
     for (round = 1; round <= MAX_ROUNDS; round++) {
@@ -2919,6 +2997,12 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
           continue;
         }
         act(rng, actor, target, round, push);
+      }
+      // 回合結束：魔王特性（狂暴、再生）
+      for (const f of [A, B]) {
+        if (!f.trait || f.hp <= 0 || A.hp <= 0 || B.hp <= 0) continue;
+        if (f.trait === 'enrage' || f.trait === 'sovereign') f.st.atk = Math.round(f.st.atk * (f.trait === 'enrage' ? 1.07 : 1.03));
+        if (f.trait === 'sovereign') { const heal = Math.min(f.maxHp - f.hp, Math.round(f.maxHp * 0.04)); if (heal > 0) { f.hp += heal; push({ kind: 'bleed', round, actor: f.side, dmg: 0, heal, text: `${f.name} 的名錄之力流轉，回復 ${heal} 生命。` }); } }
       }
       // 回合結束：流血扣血（沒有流血效果時不影響任何隨機數，舊版結果不變）
       for (const f of [A, B]) {
@@ -2952,6 +3036,12 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
   function hit(a, t, d) {
     const h = applyHit(t, d);
     h.reflected = 0;
+    // 魔王「荊棘」：受到的傷害固定反彈 15%
+    if (t.thorns && h.real + h.absorbed > 0 && a.hp > 0) {
+      const back = Math.max(1, Math.round((h.real + h.absorbed) * t.thorns));
+      a.hp = Math.max(0, a.hp - back);
+      h.reflected += back;
+    }
     if (t.reflect && t.reflect.hits > 0 && a.hp > 0) {
       const back = Math.max(1, Math.round((h.real + h.absorbed) * t.reflect.ratio));
       a.hp = Math.max(0, a.hp - back);
@@ -2961,6 +3051,24 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     return h;
   }
   const refl = (h) => (h.reflected ? `（被反震 ${h.reflected}）` : '');
+  // 魔王特性：開場效果
+  const BOSS_TRAITS = {
+    aegis: { name: '堅壁', desc: '開場擁有最大生命 35% 的護盾' },
+    thorns: { name: '荊棘', desc: '受到的傷害固定反彈 15%' },
+    seal: { name: '封印', desc: '開場封印挑戰者的技能 3 次出手' },
+    enrage: { name: '狂暴', desc: '每回合結束攻擊力 +7%' },
+    sovereign: { name: '名錄之主', desc: '開場護盾 20%、每回合回復 4% 生命且攻擊力 +3%' },
+  };
+  function applyBossTrait(f, o, trait, push) {
+    const T = BOSS_TRAITS[trait];
+    if (!T) return;
+    f.trait = trait;
+    if (trait === 'aegis') f.shield = Math.round(f.maxHp * 0.35);
+    if (trait === 'sovereign') f.shield = Math.round(f.maxHp * 0.2);
+    if (trait === 'thorns') f.thorns = 0.15;
+    if (trait === 'seal') o.silenced = 3;
+    push({ kind: 'trait', round: 0, actor: f.side, text: `守關魔王特性「${T.name}」：${T.desc}。` });
+  }
   // 破盾：直接移除對手一定比例的護盾（對手沒有護盾時不影響任何結果）
   function breakShield(t, ratio) {
     if (!(t.shield > 0)) return 0;
@@ -3333,10 +3441,11 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     // 強化需要熟練度滿級；不符合的強化等級一律視為 0
     const enh = level >= MASTERY_MAX ? clamp(Math.floor(+d.enh) || 0, 0, ENH_MAX) : 0;
     const nn = (x) => (Number.isFinite(+x) && +x > 0 ? Math.min(Math.floor(+x), 1e6) : 0);
-    const w = applyMastery(forgeFromSeed(code.seed, name, code.ver), 0, level, enh);
+    const evo = d.evo === 1 ? 1 : 0;
+    const w = applyMastery(forgeFromSeed(code.seed, name, code.ver), 0, level, enh, evo);
     return {
       id: String(id), name, code: code.code, weapon: w.name, rarity: w.rarity.id, type: w.type.name,
-      power: w.power, level, enh, wins: nn(d.wins), losses: nn(d.losses), updatedAt: nn(d.updatedAt),
+      power: w.power, level, enh, evo: w.evolved ? 1 : 0, wins: nn(d.wins), losses: nn(d.losses), updatedAt: nn(d.updatedAt),
       streak: Math.min(nn(d.streak), nn(d.wins)), bestStreak: Math.min(Math.max(nn(d.bestStreak), Math.min(nn(d.streak), nn(d.wins))), nn(d.wins)),
     };
   }
@@ -3348,6 +3457,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     };
     // 只有強化過才寫入 enh（沒強化的玩家文件格式與舊版相同）
     if ((entry.enh | 0) > 0) doc.enh = entry.enh | 0;
+    if (entry.evo === 1) doc.evo = 1;
     return doc;
   }
   // mode：'power' 依戰力；'streak' 依最高連勝（同分看目前連勝、戰力）
@@ -3475,7 +3585,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
         if (!h || typeof h.code !== 'string') return null;
         const d = decodeSeedCode(h.code);
         if (!d.ok) return null;
-        const origin = h.origin && h.origin.kind === 'name' ? { kind: 'name', forge: Math.max(0, h.origin.forge | 0) } : { kind: 'seed' };
+        const origin = d.ver === TOWER_VER ? { kind: 'tower' } : h.origin && h.origin.kind === 'name' ? { kind: 'name', forge: Math.max(0, h.origin.forge | 0) } : { kind: 'seed' };
         return { seed: d.seed, ver: d.ver, code: d.code, origin, savedAt: h.savedAt || 0 };
       },
       set(w) { storage.set(KEY, { code: w.code, origin: w.origin, savedAt: Date.now() }); },
@@ -3528,7 +3638,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
         return (Array.isArray(raw) ? raw : []).map((x) => {
           const d = decodeSeedCode(x && x.code);
           if (!d.ok) return null;
-          const origin = x.origin && x.origin.kind === 'name' ? { kind: 'name', forge: Math.max(0, x.origin.forge | 0) } : { kind: 'seed' };
+          const origin = d.ver === TOWER_VER ? { kind: 'tower' } : x.origin && x.origin.kind === 'name' ? { kind: 'name', forge: Math.max(0, x.origin.forge | 0) } : { kind: 'seed' };
           return { code: d.code, seed: d.seed, ver: d.ver, origin, at: x.at || 0 };
         }).filter(Boolean);
       };
@@ -3539,7 +3649,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
         get(code) { return read().find((x) => x.code === code) || null; },
         add(w) {
           const list = read().filter((x) => x.code !== w.code);
-          list.unshift({ code: w.code, origin: w.origin && w.origin.kind === 'name' ? { kind: 'name', forge: w.origin.forge | 0 } : { kind: 'seed' }, at: Date.now() });
+          list.unshift({ code: w.code, origin: w.tower ? { kind: 'tower' } : w.origin && w.origin.kind === 'name' ? { kind: 'name', forge: w.origin.forge | 0 } : { kind: 'seed' }, at: Date.now() });
           write(list);
         },
         remove(code) { write(read().filter((x) => x.code !== code)); },
@@ -3554,7 +3664,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
    * 各自在本機跑 simulateBattle，結果必然一致，不需要伺服器裁判。
    * ------------------------------------------------------------------ */
   const ROOM_RE = /^[0-9A-Z]{4,8}$/;
-  const PROTOCOL = 3; // 3：加入強化等級
+  const PROTOCOL = 4; // 3：加入強化等級｜4：加入進化
 
   function normalizeRoomNo(raw) {
     const t = String(raw == null ? '' : raw).toUpperCase().replace(/[\s\-_]/g, '');
@@ -3573,7 +3683,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
 
   function makePlayerState(p) {
     return {
-      v: PROTOCOL, nick: p.nick || '', code: p.code, level: p.level | 0, enh: p.enh | 0,
+      v: PROTOCOL, nick: p.nick || '', code: p.code, level: p.level | 0, enh: p.enh | 0, evo: p.evo === 1 ? 1 : 0,
       ready: !!p.ready, readyAt: p.readyAt || 0, joinedAt: p.joinedAt || 0, done: p.done || 0,
     };
   }
@@ -3590,6 +3700,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
       nick: nick.ok && nick.nick ? nick.nick : anonLabel(code.code),
       level: clamp(Math.floor(+raw.level) || 0, 0, MASTERY_MAX),
       enh: clamp(Math.floor(+raw.level) || 0, 0, MASTERY_MAX) >= MASTERY_MAX ? clamp(Math.floor(+raw.enh) || 0, 0, ENH_MAX) : 0,
+      evo: raw.evo === 1 ? 1 : 0,
       ready: raw.ready === true, readyAt: num(raw.readyAt), joinedAt: num(raw.joinedAt), done: num(raw.done),
     };
   }
@@ -3629,7 +3740,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
   function doneMark(players) { return Math.max(players[0].state.readyAt, players[1].state.readyAt); }
 
   function fighterFromState(st) {
-    return applyMastery(forgeFromSeed(st.seed, st.nick, st.ver), 0, st.level, st.enh || 0);
+    return applyMastery(forgeFromSeed(st.seed, st.nick, st.ver), 0, st.level, st.enh || 0, st.evo || 0);
   }
 
   // 雙方各自呼叫，必得相同結果（A 永遠是先進房的玩家）
@@ -3696,6 +3807,89 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
       },
     };
   }
+  /* ------------------------------------------------------------------ *
+   * Tower：試煉之塔（副本）—— 1～50 層，固定難度，所有人同一週面對相同的守關者
+   * 每層首次通關有獎勵；獎勵與進度每週一重置（重新從第 1 層爬）。最高紀錄永久保留。
+   * ------------------------------------------------------------------ */
+  const TOWER_TOP = 50;
+  // 難度曲線（目標戰力）：新手能打前幾層；第 50 層需要 +20 等級的武器
+  const TOWER_CURVE = [[1, 260], [10, 480], [20, 720], [30, 900], [40, 1080], [50, 1360]];
+  const TOWER_BOSSES = {
+    10: { trait: 'aegis', title: '鐵壁守衛' }, 20: { trait: 'thorns', title: '荊棘魔像' }, 30: { trait: 'seal', title: '封印術士' },
+    40: { trait: 'enrage', title: '狂暴巨獸' }, 50: { trait: 'sovereign', title: '名錄之主' },
+  };
+  const TOWER_NAMES = ['塔之守衛', '石階上的劍士', '迴廊的影子', '燭火術士', '無名武僧', '鎖鏈獄卒', '鏡中騎士', '塔頂的風', '沉默的看守', '古塔的殘魂'];
+  function towerPower(n) {
+    for (let i = 1; i < TOWER_CURVE.length; i++) {
+      const [a, pa] = TOWER_CURVE[i - 1], [b, pb] = TOWER_CURVE[i];
+      if (n <= b) return Math.round(pa + (pb - pa) * ((n - a) / (b - a)));
+    }
+    return TOWER_CURVE[TOWER_CURVE.length - 1][1];
+  }
+  // 週次（週一為一週開始），例如 2026-W44
+  function weekKey(date) {
+    const d = date ? new Date(date) : new Date();
+    const day = (d.getDay() + 6) % 7; // 週一 = 0
+    const mon = new Date(d.getFullYear(), d.getMonth(), d.getDate() - day);
+    const jan4 = new Date(mon.getFullYear(), 0, 4);
+    const w1 = new Date(jan4.getFullYear(), 0, 4 - ((jan4.getDay() + 6) % 7));
+    const wk = Math.round((mon - w1) / 604800000) + 1;
+    return `${mon.getFullYear()}-W${String(wk).padStart(2, '0')}`;
+  }
+  // 第 n 層的守關者（同一週所有人相同）
+  function towerFloor(n, week) {
+    n = clamp(n | 0, 1, TOWER_TOP);
+    const boss = TOWER_BOSSES[n];
+    const target = Math.round(towerPower(n) * (boss ? 1.05 : 1));
+    const rng = makeRng(cyrb53(`tower|${week}|${n}`), 'floor');
+    const lv = Math.min(MASTERY_MAX, Math.round(n * 1.2));
+    const e = n > 20 ? Math.min(ENH_MAX, Math.round((n - 20) * 0.6)) : 0;
+    // 每 10 層一個品質帶：1～10 普通／優良、11～20 優良／稀有……41～50 傳說／神話；再挑戰力最接近目標的
+    const rmin = clamp(Math.floor((n - 1) / 10), 0, 4), rmax = rmin + 1;
+    let best = null, tries = 0, got = 0;
+    while (got < 40 && tries < 2000) {
+      tries++;
+      const seed = Math.floor(rng.next() * 9007199254740991);
+      const base = forgeFromSeed(seed, boss ? `第 ${n} 層・${boss.title}` : TOWER_NAMES[seed % TOWER_NAMES.length], CURRENT_VER);
+      if (base.rarity.index < rmin || base.rarity.index > rmax) continue;
+      got++;
+      const w = applyMastery(base, 0, e > 0 ? MASTERY_MAX : lv, e);
+      if (!best || Math.abs(w.power - target) < Math.abs(best.power - target)) best = w;
+    }
+    best.isNpc = true; best.isTower = true; best.floor = n; best.week = week;
+    if (boss) { best.bossTrait = boss.trait; best.bossTitle = boss.title; }
+    return best;
+  }
+  // 第 n 層首次通關的獎勵（random 決定額外技能書；owned：已擁有的副本武器編號）
+  function towerReward(n, rand, owned) {
+    const r = { xp: 30 + n * 3, books: 0, evo: 0, weapon: 0 };
+    if ((rand || Math.random)() < 0.2) r.books += 1;
+    if (n % 5 === 0) r.books += 1;
+    const wid = { 10: 1, 20: 2, 30: 3 }[n];
+    if (wid) { if (owned && owned.includes(wid)) r.books += 2; else r.weapon = wid; }
+    if (n === 40 || n === 50) r.evo += 1;
+    return r;
+  }
+  function createTowerStore(storage) {
+    return {
+      // 本週進度：已通過的最高樓層
+      cleared(week) { return clamp(Math.floor(+storage.get('tw:' + week, 0)) || 0, 0, TOWER_TOP); },
+      best() { return clamp(Math.floor(+storage.get('twBest', 0)) || 0, 0, TOWER_TOP); },
+      // 通關第 n 層（必須是下一層）：回傳是否為本週首次
+      clear(week, n) {
+        const c = this.cleared(week);
+        if (n !== c + 1) return false;
+        storage.set('tw:' + week, n);
+        if (n > this.best()) storage.set('twBest', n);
+        return true;
+      },
+      evoStones() { return clamp(Math.floor(+storage.get('evo', 0)) || 0, 0, 99); },
+      addEvo(k) { storage.set('evo', Math.min(99, this.evoStones() + (k || 1))); },
+      useEvo() { const c = this.evoStones(); if (c <= 0) return false; storage.set('evo', c - 1); return true; },
+    };
+  }
+  MWL.Tower = { TOP: TOWER_TOP, BOSSES: TOWER_BOSSES, TRAITS: BOSS_TRAITS, WEAPONS: TOWER_WEAPONS, power: towerPower, weekKey, floor: towerFloor, reward: towerReward, createStore: createTowerStore };
+
   MWL.Daily = { boss: dailyBoss, createStore: createDailyStore, prevDay, BONUS_XP: DAILY_BONUS_XP };
 
   /* ------------------------------------------------------------------ *
@@ -3725,11 +3919,15 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     { id: 'enh_15', name: '千錘百煉', desc: '任一武器強化到 +15', test: (p) => p.maxEnh >= 15 },
     { id: 'awaken', name: '器魂覺醒', desc: '把武器強化到 +20，覺醒第二技能', test: (p) => p.maxEnh >= 20 },
     { id: 'book', name: '秘傳之書', desc: '用滿級武器在對戰中獲得技能書', test: (p) => p.books >= 1 },
+    { id: 'tower_10', name: '登塔者', desc: '試煉之塔通過第 10 層', test: (p) => p.towerBest >= 10 },
+    { id: 'tower_30', name: '深淵行者', desc: '試煉之塔通過第 30 層', test: (p) => p.towerBest >= 30 },
+    { id: 'tower_50', name: '名錄之主', desc: '登上試煉之塔第 50 層', test: (p) => p.towerBest >= 50 },
+    { id: 'evolve', name: '脫胎換骨', desc: '用進化石讓武器品質提升一階', test: (p) => p.evolved >= 1 },
     { id: 'broken', name: '劍折重生', desc: '經歷一次強化毀損（還是要繼續練下去）', test: (p) => p.broken >= 1 },
   ];
   function createProfile(storage) {
     const blank = { wins: 0, battles: 0, bestStreak: 0, upsets: 0, bigUpsets: 0, maxLevel: 0, dailyTotal: 0, dailyBest: 0, roomWins: 0, forged: 0, mythic: 0,
-      enhTries: 0, enhWins: 0, maxEnh: 0, broken: 0, books: 0 };
+      enhTries: 0, enhWins: 0, maxEnh: 0, broken: 0, books: 0, towerBest: 0, evolved: 0 };
     return {
       get() { return Object.assign({}, blank, storage.get('profile', {})); },
       unlocked() { return storage.get('achievements', {}); },
@@ -4264,7 +4462,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
  * ===================================================================== */
 (function () {
   'use strict';
-  const { Text, Forge, Art, Battle, Opponents, Storage, Leaderboard, Future, Data, SeedCode, Mastery, Nickname, Arena, RoomNet, FairPlay, Holding, Streak, Daily, Achievements, Share, Enhance, Books } = window.MWL;
+  const { Text, Forge, Art, Battle, Opponents, Storage, Leaderboard, Future, Data, SeedCode, Mastery, Nickname, Arena, RoomNet, FairPlay, Holding, Streak, Daily, Achievements, Share, Enhance, Books, Tower } = window.MWL;
 
   const store = Storage.createStorage('mwl2_');
   // 排行榜：預設本機；在 Claude 上且能使用共享資料時，切換為「這個頁面上的真實玩家」
@@ -4330,9 +4528,11 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
   const masteryStore = Mastery.createStore(store);
   const enhStore = Enhance.createStore(store);
   const bookStore = Books.createStore(store);
+  const towerStore = Tower.createStore(store);
+  const evoOf = (code) => (store.get('ev:' + code, 0) === 1 ? 1 : 0);
   const enhOf = (code) => enhStore.get(code).lv;
   // 某把武器（本體）套用這台裝置上的熟練度與強化
-  const grown = (base) => Mastery.applyMastery(base, masteryStore.get(base.code).xp, null, enhOf(base.code));
+  const grown = (base) => Mastery.applyMastery(base, masteryStore.get(base.code).xp, null, enhOf(base.code), evoOf(base.code));
   const plus = (w) => (w.enh && w.enh.level ? ` +${w.enh.level}` : '');
   const collection = Future.createCollection(store);
 
@@ -4469,6 +4669,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     } else {
       const d = SeedCode.decode(seedInput.value);
       if (!d.ok) { setError(d.error, seedInput); seedInput.focus(); return; }
+      if (d.tower) { setError('副本限定武器只能親手在試煉之塔打下來，無法用種子碼繼承。', seedInput); seedInput.focus(); return; }
       if (!readNickname()) return;
       setError('');
       seedInput.value = d.code;
@@ -4535,7 +4736,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
   function publishCurrent() {
     if (!state.weapon) return;
     const rec = masteryStore.get(state.weapon.code);
-    board.upsert({ code: state.weapon.code, nickname: state.nickname, level: state.weapon.mastery.level, enh: (state.weapon.enh && state.weapon.enh.level) || 0, wins: rec.wins, losses: rec.losses,
+    board.upsert({ code: state.weapon.code, nickname: state.nickname, level: state.weapon.mastery.level, enh: (state.weapon.enh && state.weapon.enh.level) || 0, evo: state.weapon.evolved ? 1 : 0, wins: rec.wins, losses: rec.losses,
       streak: rec.streak, bestStreak: rec.bestStreak, power: state.weapon.power })
       .catch((e) => console.warn('board upsert', e));
   }
@@ -4614,6 +4815,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
   }
   function originLabel(w) {
     if (w.origin && w.origin.kind === 'name') return w.origin.forge > 0 ? `第 ${w.origin.forge + 1} 鑄` : '首鑄';
+    if (w.tower || (w.origin && w.origin.kind === 'tower')) return '副本限定';
     return '傳承';
   }
 
@@ -4744,7 +4946,9 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     $('#library-count').textContent = `${list.length} 把${list.length >= collection.LIMIT ? '（已滿，最舊的會被移出）' : ''}`;
     const books = bookStore.count();
     const bb = $('#book-bar');
-    if (bb) bb.innerHTML = books ? `📖 技能書 <strong>${books}</strong> 本・點武器下方的「技能書」可讓熟練度 +1 級` : '📖 技能書 0 本・熟練度滿級的武器在對戰中有機率獲得';
+    const evos = towerStore.evoStones();
+    if (bb) bb.innerHTML = (books ? `📖 技能書 <strong>${books}</strong> 本・點武器下方的「技能書」可讓熟練度 +1 級` : '📖 技能書 0 本・熟練度滿級的武器在對戰中或試煉之塔有機率獲得')
+      + (evos ? `<br>💎 進化石 <strong>${evos}</strong> 顆・可讓一把武器的品質提升一階（每把限一次，最高到傳說）` : '');
     grid.innerHTML = list.map((x) => {
       const w = grown(Forge.forgeFromSeed(x.seed, holderName(''), x.ver));
       const rec = masteryStore.get(x.code);
@@ -4752,13 +4956,29 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
       return `<li class="lib-item ${on ? 'on' : ''}" style="--r-color:${w.rarity.color}">
         ${Art.renderWeaponSVG(w, { idPrefix: 'lib' + x.code.replace(/-/g, '').slice(-6), size: 140 })}
         <span class="lib-name">${esc(w.name)}${w.enh && w.enh.level ? ` <span class="lib-enh">+${w.enh.level}</span>` : ''}</span>
-        <span class="lib-meta"><b>${esc(w.rarity.name)}</b>${w.build && w.build.id !== 'balanced' ? `・${esc(w.build.name)}流` : ''}・Lv.${w.mastery.level}・戰力 ${w.power}${rec.bestStreak ? `・最高 ${rec.bestStreak} 連勝` : ''}</span>
+        <span class="lib-meta"><b>${esc(w.rarity.name)}</b>${w.tower ? '・副本限定' : ''}${w.evolved ? '・已進化' : ''}${w.build && w.build.id !== 'balanced' ? `・${esc(w.build.name)}流` : ''}・Lv.${w.mastery.level}・戰力 ${w.power}${rec.bestStreak ? `・最高 ${rec.bestStreak} 連勝` : ''}</span>
         ${books && w.mastery.level < Mastery.MAX ? `<button class="btn btn-book" type="button" data-book="${esc(x.code)}">📖 技能書 Lv.${w.mastery.level} → ${w.mastery.level + 1}</button>` : ''}
+        ${evos && Enhance.canEvolve(w) ? `<button class="btn btn-evo" type="button" data-evo="${esc(x.code)}">💎 進化：${esc(w.rarity.name)} → ${esc(Data.RARITIES[w.rarity.index + 1].name)}</button>` : ''}
         ${on ? '<span class="lib-on">裝備中</span>' : `<div class="lib-actions"><button class="btn" type="button" data-equip="${esc(x.code)}">裝備</button><button class="btn btn-ghost btn-del" type="button" data-del="${esc(x.code)}" aria-label="從武器庫移除 ${esc(w.name)}">移除</button></div>`}
       </li>`;
     }).join('');
   }
   $('#library-grid').addEventListener('click', (e) => {
+    const ev = e.target.closest('[data-evo]');
+    if (ev) {
+      if (state.playing || room.playing) { toast('戰鬥中不能進化'); return; }
+      const code = ev.dataset.evo;
+      // 點兩下確認（進化石很珍貴）
+      if (!ev.dataset.armed) { ev.dataset.armed = '1'; ev.textContent = '再點一次確認進化'; setTimeout(() => { if (ev.isConnected) renderLibrary(); }, 3000); return; }
+      if (evoOf(code) || !towerStore.useEvo()) { toast('無法進化'); renderLibrary(); return; }
+      store.set('ev:' + code, 1);
+      if (state.base && code === state.base.code) { state.weapon = grown(state.base); renderCard(state.weapon); animateBars(); publishCurrent(); if (room.conn) pushMyState(); }
+      celebrate(profile.update((p) => { p.evolved = (p.evolved || 0) + 1; }));
+      sfx('awaken');
+      renderLibrary();
+      toast('進化成功！武器品質提升一階');
+      return;
+    }
     const bk = e.target.closest('[data-book]');
     if (bk) {
       if (state.playing || room.playing) { toast('戰鬥中不能使用技能書'); return; }
@@ -4840,7 +5060,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     const w = m.w;
     const inner = `${Art.renderWeaponSVG(w, { idPrefix: 'mat' + m.x.code.replace(/-/g, '').slice(-6), size: 56 })}
       <span><span class="mat-name">${esc(w.name)}${plus(w)}</span>
-      <span class="mat-meta">${esc(w.rarity.name)}・${esc(w.type.name)}・Lv.${w.mastery.level}・${m.x.origin.kind === 'name' ? '名字鑄造' : '傳承'}</span>
+      <span class="mat-meta">${esc(w.rarity.name)}・${esc(w.type.name)}・Lv.${w.mastery.level}・${m.x.origin.kind === 'name' ? '名字鑄造' : m.x.origin.kind === 'tower' ? '副本限定' : '傳承'}</span>
       ${m.chk.ok ? '' : `<span class="mat-why">${esc(m.chk.reason)}</span>`}</span>`;
     return button ? `<li><button class="mat" type="button" data-mat="${esc(m.x.code)}" style="--r-color:${w.rarity.color}">${inner}</button></li>`
       : `<li class="mat off" style="--r-color:${w.rarity.color}">${inner}</li>`;
@@ -5289,6 +5509,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     } else if (state.mustSwitch && !state.playing && state.battle && $('#battle-result').hidden) newOpponent('forced');
     else if (!state.playing && !state.battle) renderFighters();
     renderDaily();
+    renderTower();
     renderStreakBar();
   }
 
@@ -5302,7 +5523,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     if (state.playing) return false;
     const code = state.weapon.code, streak = masteryStore.get(code).streak;
     // 剛打完每日守關者：回到原本保存的系統對手，不算換人
-    if (state.opponent && state.opponent.isDaily) {
+    if (state.opponent && (state.opponent.isDaily || state.opponent.isTower)) {
       const saved = loadOpp(code);
       if (saved) { state.opponent = saved; state.battle = null; state.mustSwitch = false; resetBattleUI(); return true; }
     }
@@ -5347,6 +5568,75 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
       ${st.done ? '' : `<button class="btn ${fighting ? '' : 'btn-primary'}" type="button" id="btn-daily" ${fighting ? 'disabled' : ''}>${fighting ? '守關者已就位' : '挑戰守關者'}</button>`}`;
     const b = $('#btn-daily'); if (b) b.addEventListener('click', startDaily);
   }
+  /* ---------- 試煉之塔 ---------- */
+  function towerOwned() { return Object.keys(Tower.WEAPONS).map(Number).filter((n) => collection.get('MWT-' + n)); }
+  function rewardText(r) {
+    return [`經驗 +${r.xp}`, r.books ? `技能書 ×${r.books}` : '', r.evo ? `進化石 ×${r.evo}` : '', r.weapon ? `副本武器「${Tower.WEAPONS[r.weapon].name}」` : ''].filter(Boolean).join('・');
+  }
+  function renderTower() {
+    const box = $('#tower-card');
+    if (!box || !state.weapon) return;
+    const wk = Tower.weekKey(), c = towerStore.cleared(wk), best = towerStore.best();
+    const fighting = state.opponent && state.opponent.isTower;
+    if (c >= Tower.TOP) {
+      box.className = 'daily tower';
+      box.innerHTML = `<div class="art">${Art.renderWeaponSVG(Tower.floor(Tower.TOP, wk), { idPrefix: 'twx', size: 64 })}</div><div class="daily-info"><span class="daily-label">試煉之塔・本週已登頂</span><span class="daily-name">第 ${Tower.TOP} 層全數通過！</span><span class="daily-meta">最高紀錄 ${best} 層・每週一重置，屆時可以再領一次獎勵</span></div>`;
+      return;
+    }
+    const n = c + 1, f = Tower.floor(n, wk), boss = Tower.BOSSES[n];
+    const next = Tower.reward(n, () => 1, towerOwned());
+    box.className = 'daily tower' + (boss ? ' boss' : '');
+    box.innerHTML = `
+      <div class="art">${Art.renderWeaponSVG(f, { idPrefix: 'tw' + n, size: 64 })}</div>
+      <div class="daily-info">
+        <span class="daily-label">試煉之塔・本週第 ${n} 層${boss ? '・魔王' : ''}</span>
+        <span class="daily-name">${esc(f.owner)}</span>
+        <span class="daily-meta">${esc(f.rarity.name)}・${esc(f.name)}${plus(f)}・Lv.${f.mastery.level}・戰力 ${f.power}</span>
+        ${boss ? `<span class="daily-meta" style="color:#ffc2cf">特性「${esc(Tower.TRAITS[boss.trait].name)}」：${esc(Tower.TRAITS[boss.trait].desc)}</span>` : ''}
+        <span class="daily-meta">首通獎勵：${esc(rewardText(next))}${n % 5 ? '（另有 20% 機率技能書）' : ''}</span>
+        <span class="daily-meta">本週進度 ${c} 層・最高紀錄 ${best} 層・每週一重置</span>
+      </div>
+      <div class="tower-actions">${fighting
+        ? '<button class="btn" type="button" id="btn-tower-leave">離開試煉之塔</button>'
+        : `<button class="btn btn-primary" type="button" id="btn-tower">挑戰第 ${n} 層</button>`}</div>`;
+    const b = $('#btn-tower'); if (b) b.addEventListener('click', startTower);
+    const l = $('#btn-tower-leave'); if (l) l.addEventListener('click', leaveTower);
+  }
+  function startTower() {
+    if (state.playing) return;
+    const wk = Tower.weekKey(), n = towerStore.cleared(wk) + 1;
+    if (n > Tower.TOP) { toast('本週已經登頂了'); return; }
+    state.opponent = Tower.floor(n, wk);
+    state.battle = null; state.mustSwitch = false;
+    resetBattleUI();
+    if (state.opponent.bossTitle) { toast(`⚠️ 第 ${n} 層魔王：${state.opponent.bossTitle}`); sfx('alert'); } else toast(`試煉之塔第 ${n} 層：${state.opponent.owner}`);
+  }
+  function leaveTower() {
+    if (state.playing) return;
+    newOpponent('auto');
+    toast('已離開試煉之塔');
+  }
+  // 塔內戰鬥：不影響連勝與戰績；首次通關本週該層才給獎勵
+  function towerResult(result) {
+    const f = state.opponent, code = state.weapon.code;
+    const before = state.weapon.mastery.level;
+    const out = { result, floor: f.floor, first: false, reward: null };
+    if (result === 'win') {
+      out.first = towerStore.clear(f.week, f.floor);
+      if (out.first) {
+        const r = Tower.reward(f.floor, Math.random, towerOwned());
+        out.reward = r;
+        masteryStore.addXp(code, r.xp);
+        if (r.books) bookStore.add(r.books);
+        if (r.evo) towerStore.addEvo(r.evo);
+        if (r.weapon) collection.add(Forge.forgeFromSeed(SeedCode.decode('MWT-' + r.weapon).seed, holderName(''), 9));
+      }
+    } else masteryStore.addXp(code, 10);
+    state.weapon = withMastery(state.base);
+    out.lv = { before, after: state.weapon.mastery.level };
+    out.fresh = profile.update((p) => { p.towerBest = Math.max(p.towerBest || 0, towerStore.best()); p.maxLevel = Math.max(p.maxLevel, state.weapon.mastery.level); });
+    return out;
+  }
   function renderStreakBar() {
     const bar = $('#streak-bar');
     if (!state.weapon) { bar.innerHTML = ''; return; }
@@ -5373,8 +5663,9 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     $('#btn-retry').disabled = true;
     $('#btn-retry').hidden = false;
     const nb = $('#btn-new-opp');
-    const sl = state.weapon ? switchLabel() : { text: '換個對手', off: false };
+    const sl = state.opponent && state.opponent.isTower ? { text: '離開試煉之塔', off: false } : state.weapon ? switchLabel() : { text: '換個對手', off: false };
     nb.disabled = sl.off; nb.textContent = sl.text; nb.classList.remove('btn-primary', 'wide');
+    renderTower();
   }
 
   function fighterHTML(w, tag, hp, maxHp, pfx) {
@@ -5396,8 +5687,9 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     fa.style.setProperty('--r-color', a.rarity.color);
     fb.style.setProperty('--r-color', b.rarity.color);
     fa.innerHTML = fighterHTML(a, '你', previewHp(a), previewHp(a));
-    fb.innerHTML = fighterHTML(b, b.isDaily ? '今日守關者' : (b.encounter ? b.encounter.name : '系統對手'), previewHp(b), previewHp(b));
-    fb.dataset.enc = b.isDaily ? 'daily' : (b.encounter ? b.encounter.id : 'even');
+    const tag = b.isTower ? (b.bossTitle ? `第 ${b.floor} 層魔王` : `試煉之塔 第 ${b.floor} 層`) : b.isDaily ? '今日守關者' : (b.encounter ? b.encounter.name : '系統對手');
+    fb.innerHTML = fighterHTML(b, tag, previewHp(b), previewHp(b));
+    fb.dataset.enc = b.isTower ? (b.bossTitle ? 'elite' : 'strong') : b.isDaily ? 'daily' : (b.encounter ? b.encounter.id : 'even');
   }
 
   function setHp(f, hp, maxHp, shield) {
@@ -5453,9 +5745,14 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     const battleSeed = (Date.now() ^ (state.battleNo * 7919)) >>> 0;
     const res = Battle.simulateBattle(state.weapon, state.opponent, battleSeed);
     state.battle = res;
-    state.battleText = Battle.toText(res, state.weapon, state.opponent, { title: state.opponent.isDaily ? '每日挑戰' : '系統對戰', url: siteUrl() });
+    state.battleText = Battle.toText(res, state.weapon, state.opponent, { title: state.opponent.isTower ? `試煉之塔第 ${state.opponent.floor} 層` : state.opponent.isDaily ? '每日挑戰' : '系統對戰', url: siteUrl() });
     // 開打當下就結算並保存，中途重新整理也無法取消這場（防止只保留勝場）
     const result = res.winner === 'A' ? 'win' : res.winner === 'B' ? 'loss' : 'draw';
+    if (state.opponent.isTower) {
+      state.pending = { result, tower: towerResult(result) };
+      state.mustSwitch = result === 'win';
+      return playBattle(res);
+    }
     state.pending = Object.assign({ result }, gainMastery(result, state.weapon, state.opponent, 'npc'));
     // 每日挑戰：首次擊敗守關者給額外經驗並累積修行天數
     if (state.opponent.isDaily && result === 'win') {
@@ -5474,6 +5771,9 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     if (!state.opponent.isDaily && state.mustSwitch) dropOpp(state.weapon.code);
     if (result === 'loss') switchStore.reset(state.weapon.code);
     publishCurrent();
+    return playBattle(res);
+  }
+  async function playBattle(res) {
     state.playing = true;
     state.skip = reduceMotion;
     renderFighters();
@@ -5489,7 +5789,35 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     await playEvents(res, {
       el: (side) => $('#fighter-' + side), log, round: $('#log-round'), skipped: () => state.skip,
     });
-    finishBattle(res);
+    if (state.pending && state.pending.tower) finishTower(res); else finishBattle(res);
+  }
+  function finishTower(res) {
+    state.playing = false;
+    const T = state.pending.tower, result = T.result;
+    const banner = $('#battle-result');
+    banner.className = 'result-banner ' + result;
+    const label = result === 'win' ? `第 ${T.floor} 層突破` : result === 'loss' ? '挑戰失敗' : '平手（未通過）';
+    const detail = res.reason !== 'ko' ? `${res.rounds} 回合時間到，依剩餘生命比例判定` : result === 'win' ? `第 ${res.rounds} 回合擊倒守關者` : `第 ${res.rounds} 回合被擊倒`;
+    const rw = T.reward ? `<span class="xp-gain up">首通獎勵：${esc(rewardText(T.reward))}</span>` : result === 'win' ? '<span class="xp-gain" style="color:var(--muted)">本週已領過這層的獎勵</span>' : '<span class="xp-gain">熟練經驗 +10・可以重新挑戰同一層</span>';
+    const lvl = T.lv.after > T.lv.before ? `<span class="xp-gain up">熟練度提升至 Lv.${T.lv.after}</span>` : '';
+    const top = result === 'win' && T.floor >= Tower.TOP ? '<span class="xp-gain up">本週登頂！下週一重置後可以再爬一次</span>' : '';
+    const copyBtn = '<button class="share-inline" type="button" data-copy-battle="npc">複製戰鬥過程</button>';
+    banner.innerHTML = `${label}<small>${esc(detail)}</small>${rw}${lvl}${top}<span class="banner-actions">${copyBtn}</span>`;
+    banner.hidden = false;
+    sfx(result === 'win' ? 'win' : result === 'loss' ? 'lose' : 'draw');
+    if (T.reward && T.reward.weapon) { setTimeout(() => sfx('awaken'), 600); toast(`獲得副本武器「${Tower.WEAPONS[T.reward.weapon].name}」！已放進武器庫`); renderLibrary(); }
+    else if (T.reward && (T.reward.books || T.reward.evo)) { setTimeout(() => sfx('book'), 700); renderLibrary(); }
+    celebrate(T.fresh);
+    renderTower();
+    $('#btn-skip').disabled = true;
+    const win = result === 'win', more = win && T.floor < Tower.TOP;
+    $('#btn-retry').hidden = win; $('#btn-retry').disabled = win;
+    const nb = $('#btn-new-opp');
+    nb.disabled = false;
+    nb.textContent = more ? `挑戰第 ${T.floor + 1} 層` : '離開試煉之塔';
+    nb.classList.toggle('btn-primary', more); nb.classList.toggle('wide', more);
+    $('#btn-back-card').disabled = false;
+    const fa = $('#fighter-A .fighter-lv'); if (fa) fa.textContent = `Lv.${state.weapon.mastery.level}`;
   }
 
   async function finishBattle(res) {
@@ -5576,6 +5904,11 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
   $('#btn-skip').addEventListener('click', () => { state.skip = true; });
   $('#btn-retry').addEventListener('click', () => { if (state.mustSwitch) return; state.battle = null; startBattle(); });
   $('#btn-new-opp').addEventListener('click', () => {
+    if (state.opponent && state.opponent.isTower) {
+      const T = state.pending && state.pending.tower;
+      if (T && T.result === 'win' && T.floor < Tower.TOP && state.battle) startTower(); else leaveTower();
+      return;
+    }
     if (newOpponent(state.mustSwitch ? 'forced' : 'manual')) {
       toast(encounterToast(state.opponent));
       if (state.opponent.encounter && state.opponent.encounter.id === 'elite') sfx('alert');
@@ -5617,7 +5950,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
   function pushMyState() {
     if (!room.conn || !state.weapon) return;
     room.conn.setState(Arena.makePlayerState({
-      nick: state.nickname, code: state.weapon.code, level: state.weapon.mastery.level, enh: (state.weapon.enh && state.weapon.enh.level) || 0,
+      nick: state.nickname, code: state.weapon.code, level: state.weapon.mastery.level, enh: (state.weapon.enh && state.weapon.enh.level) || 0, evo: state.weapon.evolved ? 1 : 0,
       ready: room.ready, readyAt: room.readyAt, joinedAt: room.joinedAt, done: room.done,
     }));
   }
