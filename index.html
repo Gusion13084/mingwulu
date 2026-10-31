@@ -3103,14 +3103,15 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     '貓耳盜賊', '退休勇者', '王都衛兵長', '森林德魯伊', '史萊姆愛好者', '吟遊詩人', '鐵匠學徒', '霧港船長', '占星少女'];
 
   // 遭遇類型：不刻意控制勝率，偶爾會遇到明顯較弱或較強的對手。
-  //   weak 弱敵 18%｜even 勢均力敵 55%｜strong 強敵 19%｜elite 精英 8%
+  //   weak 弱敵 30%｜even 勢均力敵 50%｜strong 強敵 14%｜elite 精英 6%（整體偏向玩家，連勝時對手才逐漸變強）
   //   power：對手戰力約為玩家的倍率範圍；lv / enh：熟練度與強化等級相對玩家的偏移範圍
   const ENCOUNTERS = [
-    { id: 'weak',   name: '弱敵',     weight: 18, power: [0.6, 0.84],  lv: [-7, -1], enh: [-6, -2] },
-    { id: 'even',   name: '系統對手', weight: 55, power: [0.86, 1.14], lv: [-3, 3],  enh: [-3, 3] },
-    { id: 'strong', name: '強敵',     weight: 19, power: [1.16, 1.42], lv: [0, 5],   enh: [1, 5] },
-    { id: 'elite',  name: '精英對手', weight: 8,  power: [1.45, 1.85], lv: [2, 8],   enh: [3, 8] },
+    { id: 'weak',   name: '弱敵',     weight: 30, power: [0.62, 0.84], lv: [-7, -1], enh: [-6, -2] },
+    { id: 'even',   name: '系統對手', weight: 50, power: [0.82, 1.04], lv: [-3, 2],  enh: [-3, 2] },
+    { id: 'strong', name: '強敵',     weight: 14, power: [1.1, 1.3],   lv: [0, 4],   enh: [1, 4] },
+    { id: 'elite',  name: '精英對手', weight: 6,  power: [1.35, 1.6],  lv: [2, 6],   enh: [2, 6] },
   ];
+
   function pickEncounter(rand) {
     let r = rand() * 100;
     for (const e of ENCOUNTERS) { r -= e.weight; if (r < 0) return e; }
@@ -3120,8 +3121,8 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
   function makeOpponent(playerWeapon, rand, streak) {
     rand = rand || Math.random;
     const enc = pickEncounter(rand);
-    // 連勝越多，對手越強（最多再強 25%），保持緊張感
-    const ramp = Math.min(0.25, Math.max(0, streak | 0) * 0.025);
+    // 連勝越多，對手越強（每場 +1.5%，最多再強 15%），保持緊張感
+    const ramp = Math.min(0.15, Math.max(0, streak | 0) * 0.015);
     const target = playerWeapon.power * (enc.power[0] + rand() * (enc.power[1] - enc.power[0]) + ramp);
     const pLv = (playerWeapon.mastery && playerWeapon.mastery.level) || 0;
     const pEnh = (playerWeapon.enh && playerWeapon.enh.level) || 0;
