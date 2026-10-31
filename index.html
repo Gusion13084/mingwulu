@@ -268,6 +268,12 @@ body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-a
 .bar span { display: block; height: 100%; width: var(--w, 0%); border-radius: inherit; background: linear-gradient(90deg, var(--c1), var(--c2)); transition: width 0.8s cubic-bezier(0.2, 0.8, 0.2, 1); }
 .skill { padding: 12px 14px; border-radius: 12px; background: rgba(157, 114, 255, 0.08); border: 1px solid rgba(157, 114, 255, 0.3); display: grid; gap: 4px; }
 .skill-label { font-size: 12px; color: var(--violet); letter-spacing: 0.16em; }
+.skill-tier { display: inline-block; margin-left: 6px; padding: 0 7px; border-radius: 99px; font-family: var(--f-latin); font-size: 11px; letter-spacing: 0.04em; line-height: 18px; vertical-align: 1px; }
+.skill-tier.t1 { background: #f2c14e; color: #2a1d05; }
+.skill-tier.t2 { background: #9fb0bf; color: #141821; }
+.skill-tier.t3 { background: #6f6a7f; color: #f1eef8; }
+.skill-tier.trig { background: rgba(255, 143, 168, 0.18); color: #ffc2cf; border: 1px solid rgba(255, 143, 168, 0.55); font-family: var(--f-body); }
+.skill-tier.comp { background: rgba(157, 114, 255, 0.25); color: #d8c6ff; border: 1px solid rgba(157, 114, 255, 0.6); font-family: var(--f-body); }
 .skill-name { font-family: var(--f-display); font-weight: 900; font-size: 19px; }
 .skill-desc { font-size: 14px; color: var(--muted); }
 .power { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
@@ -1154,7 +1160,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     ext('staff', 6, { atk: 82, def: 42, spd: 58, crit: 17 }, ['法輪杖', '龍首杖'], ['regen', 'silence']),
     ext('bow', 6, { atk: 76, def: 38, spd: 70, crit: 13 }, ['鵲畫弓', '月影弓'], ['execute']),
     ext('daggers', 5, null, ['鴛鴦刺', '雙鉤'], ['haste', 'execute']),
-    ext('scythe', 5, null, ['冥河鐮'], ['execute']),
+    ext('scythe', 5, { atk: 89, def: 40, spd: 53, crit: 13 }, ['冥河鐮'], ['execute']),
     ext('hammer', 5, null, ['八棱錘', '震天錘'], ['sunder']),
     ext('gauntlet', 5, null, ['鷹爪', '金剛拳'], ['haste', 'reflect']),
     ext('tome', 5, null, ['天書', '咒文卷'], ['silence', 'regen']),
@@ -1243,8 +1249,87 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
   function round2(n) { return Math.round(n * 100) / 100; }
   function pct(n) { return Math.round(n * 100) + '%'; }
 
+  /* ---------- 第三版：技能階位與複合技能 ---------- */
+  // 階位：T1 原始威力；T2 威力 90%、發動率 +3%；T3 威力 70%、發動率 +6%。品質越高越容易出 T1
+  const SKILL_TIERS = [{ t: 1, k: 1, c: 0 }, { t: 2, k: 0.9, c: 0.03 }, { t: 3, k: 0.7, c: 0.06 }];
+  const TIER_WEIGHTS = [[20, 40, 40], [30, 40, 30], [40, 40, 20], [50, 35, 15], [60, 30, 10], [70, 25, 5]];
+  // 複合技能：主效果威力 ×0.78，再附帶一個副效果（威力約為單一技能的 60%～70%）
+  const COMPOUND_RATE = 0.3, COMPOUND_MAIN = 0.78;
+  // 觸發方式：機率（原本）／蓄力（每第 3 或 4 次出手必定發動，威力較高）／背水（生命低於 40% 時機率加倍）
+  //          ／先發（第一次出手必定發動）／連鎖（發動後 35% 機率再發動一次，威力 60%）
+  const TRIGGERS = [
+    { id: 'chance', name: '', weight: 50 }, { id: 'charge', name: '蓄力', weight: 14 }, { id: 'desperate', name: '背水', weight: 14 },
+    { id: 'opening', name: '先發', weight: 11 }, { id: 'chain', name: '連鎖', weight: 11 },
+  ];
+  const TRIGGER_NAMES = Object.fromEntries(TRIGGERS.map((t) => [t.id, t.name]));
+  const CHARGE_K = [1.05, 1.5], DESPERATE_BASE = 0.7, OPENING_BASE = 0.5, CHAIN_BASE = 0.75;
+  const RIDERS = ['bleed', 'weaken', 'sunder', 'drain', 'guard', 'stun', 'silence', 'regen'];
+  const MAG_KEYS = ['mult', 'shield', 'heal', 'bleed', 'weaken', 'exec', 'sunder', 'reflect', 'regen'];
+  const scaleMag = (o, k) => { const x = Object.assign({}, o); for (const key of MAG_KEYS) if (x[key] != null) x[key] = round2(x[key] * k); return x; };
+  function makeRider(rng, effect, rarityIndex, lvl) {
+    const r = { effect };
+    switch (effect) {
+      case 'bleed':   r.bleed = round2(rng.range(0.22, 0.3)); break;
+      case 'weaken':  r.weaken = round2(rng.range(0.11, 0.15) + rarityIndex * 0.005); break;
+      case 'sunder':  r.sunder = round2(rng.range(0.18, 0.22) + rarityIndex * 0.005); break;
+      case 'drain':   r.heal = round2(rng.range(0.35, 0.45)); break;
+      case 'guard':   r.shield = round2(rng.range(0.6, 0.8) * lvl); break;
+      case 'stun':    r.stunChance = round2(rng.range(0.42, 0.52)); break;
+      case 'silence': r.turns = 1; break;
+      case 'regen':   r.regen = round2(rng.range(0.1, 0.12)); break;
+    }
+    return r;
+  }
+  function refineSkillV3(skill, xr, type, element, rarityIndex, lvl, EFFECTS_TBL) {
+    const tier = xr.weighted(SKILL_TIERS.map((t, i) => Object.assign({ weight: TIER_WEIGHTS[rarityIndex][i] }, t)));
+    let s = Object.assign({}, skill);
+    const pool = RIDERS.filter((e) => e !== s.effect && ((type.skills || []).includes(e) || (AWAKEN[type.id] || []).includes(e)));
+    if (s.effect !== 'haste' && pool.length && xr.chance(COMPOUND_RATE)) {
+      const re = xr.pick(pool);
+      s = scaleMag(s, COMPOUND_MAIN);
+      s.rider = makeRider(xr, re, rarityIndex, lvl);
+      s.name = `${s.name}＋${xr.pick(EFFECTS_TBL[re].names)}`;
+    }
+    s = scaleMag(s, tier.k);
+    if (s.rider) s.rider = scaleMag(s.rider, tier.k);
+    s.chance = round2(clamp(s.chance + tier.c, 0.15, 0.5));
+    s.tier = tier.t;
+    // 觸發方式
+    const trig = xr.weighted(TRIGGERS);
+    if (trig.id !== 'chance') {
+      s.trigger = trig.id;
+      if (trig.id === 'charge') { s.every = xr.chance(0.5) ? 3 : 4; s = scaleMag(s, s.every === 3 ? CHARGE_K[0] : CHARGE_K[1]); }
+      if (trig.id === 'desperate') s.chance = round2(s.chance * DESPERATE_BASE);
+      if (trig.id === 'opening') s.chance = round2(s.chance * OPENING_BASE);
+      if (trig.id === 'chain') s.chance = round2(s.chance * CHAIN_BASE);
+    }
+    s.desc = describeSkill(s);
+    return s;
+  }
+  function riderText(r) {
+    switch (r.effect) {
+      case 'bleed':   return `使對手流血 3 回合（每回合損失該次傷害的 ${pct(r.bleed)}）`;
+      case 'weaken':  return `對手攻擊力下降 ${pct(r.weaken)}`;
+      case 'sunder':  return `對手防禦下降 ${pct(r.sunder)}`;
+      case 'drain':   return `回復傷害量 ${pct(r.heal)} 的生命`;
+      case 'guard':   return `獲得等同防禦 ${pct(r.shield)} 的護盾`;
+      case 'stun':    return `${pct(r.stunChance)} 機率震暈對手`;
+      case 'silence': return `封印對手技能 ${r.turns} 次出手`;
+      case 'regen':   return `回復最大生命的 ${pct(r.regen)}`;
+    }
+    return '';
+  }
+
   function describeSkill(s) {
-    const head = `每次出手有 ${pct(s.chance)} 機率發動：`;
+    if (s.rider) {
+      const main = describeSkill(Object.assign({}, s, { rider: null })).replace(/。$/, '');
+      return `${main}；並附帶：${riderText(s.rider)}。`;
+    }
+    const head = s.trigger === 'charge' ? `每第 ${s.every} 次出手必定發動：`
+      : s.trigger === 'desperate' ? `每次出手有 ${pct(s.chance)} 機率發動（生命低於 40% 時機率加倍）：`
+        : s.trigger === 'opening' ? `第一次出手必定發動，之後每次出手有 ${pct(s.chance)} 機率發動：`
+          : s.trigger === 'chain' ? `每次出手有 ${pct(s.chance)} 機率發動（發動後 35% 機率連鎖再發動一次）：`
+            : `每次出手有 ${pct(s.chance)} 機率發動：`;
     switch (s.effect) {
       case 'burst':  return head + `造成攻擊力 ${pct(s.mult)} 的重擊，無法閃避。`;
       case 'multi':  return head + `連續攻擊 ${s.hits} 次，每次 ${pct(s.mult)} 攻擊力。`;
@@ -1280,7 +1365,17 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
       execute: m * (1 + (skill.exec || 0) * 0.45), sunder: m * 1.6, haste: m + 0.95,
       reflect: m + (skill.reflect || 0) * (skill.hits || 2) * 0.7, silence: m * 1.55, regen: m + (skill.regen || 0) * 9,
     }[skill.effect] || m;
-    return Math.round(skill.chance * eff * 110);
+    const r = skill.rider;
+    const extra = !r ? 0 : {
+      bleed: m * (r.bleed || 0) * 2.4, weaken: m * 0.6 * ((r.weaken || 0) / 0.17), sunder: m * 0.6 * ((r.sunder || 0) / 0.22),
+      drain: m * (r.heal || 0) * 0.6, guard: (r.shield || 0) * 0.6, stun: m * 0.5 * ((r.stunChance || 0) / 0.35),
+      silence: m * 0.3, regen: (r.regen || 0) * 9,
+    }[r.effect] || 0;
+    const c = skill.trigger === 'charge' ? 1 / (skill.every || 3)
+      : skill.trigger === 'desperate' ? skill.chance * 1.3
+        : skill.trigger === 'opening' ? skill.chance + 0.08
+          : skill.trigger === 'chain' ? skill.chance * 1.2 : skill.chance;
+    return Math.round(c * (eff + extra) * 110);
   }
 
   const ANON = '無名俠客';
@@ -1341,7 +1436,9 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
       crit: clamp(Math.round(type.base.crit * (0.85 + rarityIndex * 0.15) * sr.range(spread[0], spread[1])), 1, 60),
     };
 
-    const skill = makeSkill(R('skill'), type, element, rarityIndex, special, rarity.skillTier, D.EFFECTS);
+    let skill = makeSkill(R('skill'), type, element, rarityIndex, special, rarity.skillTier, D.EFFECTS);
+    // 第三版起：技能有階位（T1／T2／T3），並可能是複合技能（使用獨立的亂數流，不影響其他欄位）
+    if (ver >= 3 && !special) skill = refineSkillV3(skill, R('skillx'), type, element, rarityIndex, rarity.skillTier, D.EFFECTS);
     const power = computePower(stats, skill);
 
     // 稱號：依最突出的數值
@@ -1399,7 +1496,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
       `【名武錄】${w.owner} 的專屬武器`,
       `◆ ${w.name}${enhTag(w)}（${w.rarity.name}・${w.type.name}・${w.element.name}屬性）`,
       `攻擊 ${w.stats.atk}｜防禦 ${w.stats.def}｜速度 ${w.stats.spd}｜暴擊 ${w.stats.crit}%`,
-      `技能「${w.skill.name}」：${w.skill.desc}`,
+      `技能「${w.skill.name}」${w.skill.tier || w.skill.rider || w.skill.trigger ? `（${[w.skill.tier ? 'T' + w.skill.tier : '', w.skill.rider ? '複合' : '', w.skill.trigger ? TRIGGER_NAMES[w.skill.trigger] : ''].filter(Boolean).join('・')}）` : ''}：${w.skill.desc}`,
     ].concat(w.skill2 ? [`覺醒技能「${w.skill2.name}」：${w.skill2.desc}`] : []).concat([
       `熟練度：Lv.${m.level} ${m.tier}（技能傷害 +${Math.round(m.dmgBonus * 100)}%）`,
     ]).concat(e ? [`強化：+${e}${e >= 20 ? '（已覺醒）' : ''}`] : []).concat([
@@ -1484,8 +1581,17 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     const sk = Object.assign({}, base);
     sk.chance = round2(clamp(base.chance + info.chanceBonus * chanceShare, 0, 0.6));
     if (sk.mult != null) sk.mult = round2(base.mult * k);
+    // 蓄力技能不看發動率：熟練度的發動率加成改為威力加成
+    // 蓄力技能不看發動率：熟練度 Lv.15 起蓄力間隔 -1（最少 2），並有少量威力加成
+    if (sk.trigger === 'charge') {
+      Object.assign(sk, scaleMag(sk, 1 + info.chanceBonus * chanceShare * 2), { chance: base.chance });
+      if (info.level >= 15 && chanceShare >= 1) sk.every = Math.max(2, (base.every || 3) - 1);
+    }
+    // 先發技能：熟練度的發動率加成只算一半（第一擊已經必定發動）
+    if (sk.trigger === 'opening') sk.chance = round2(clamp(base.chance + info.chanceBonus * chanceShare * 0.5, 0, 0.6));
     // 護盾：實際護盾量為生成數值的 85%（2026-10 平衡調整），再乘上熟練度加成
     if (sk.shield != null) { sk.shield = round2(base.shield * SHIELD_RATIO * k); sk.stackCap = true; }
+    if (sk.rider && sk.rider.shield != null) sk.rider = Object.assign({}, sk.rider, { shield: round2(sk.rider.shield * SHIELD_RATIO * k) });
     sk.desc = describeSkill(sk);
     return sk;
   }
@@ -1514,7 +1620,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     return Math.max(5, Math.round(base * ratio * bonus));
   }
 
-  MWL.Forge = { forgeWeapon, forgeFromSeed, weaponToText, computePower, describeSkill, ANON };
+  MWL.Forge = { forgeWeapon, forgeFromSeed, weaponToText, computePower, describeSkill, ANON, SKILL_TIERS, COMPOUND_RATE, TRIGGERS, TRIGGER_NAMES };
   MWL.SeedCode = { encode: encodeSeedCode, decode: decodeSeedCode };
   MWL.Mastery = { applyMastery, masteryInfo, levelFromXp, xpForLevel, battleXp, streakBonus, MAX: MASTERY_MAX, DMG_PER_LV: MASTERY_DMG_PER_LV };
 
@@ -1548,7 +1654,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     staff:    { atk: 0.019, def: 0.01,  spd: 0.012, crit: 0.3 },
     bow:      { atk: 0.018, def: 0.008, spd: 0.016, crit: 0.25 },
     daggers:  { atk: 0.015, def: 0.008, spd: 0.02,  crit: 0.3 },
-    scythe:   { atk: 0.02,  def: 0.008, spd: 0.012, crit: 0.3 },
+    scythe:   { atk: 0.022, def: 0.01,  spd: 0.013, crit: 0.3 },
     hammer:   { atk: 0.022, def: 0.014, spd: 0.006, crit: 0.15 },
     gauntlet: { atk: 0.017, def: 0.016, spd: 0.014, crit: 0.15 },
     tome:     { atk: 0.02,  def: 0.012, spd: 0.01,  crit: 0.25 },
@@ -2660,6 +2766,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
    * 勝負由攻擊、防禦、速度、暴擊與技能共同決定，並含有可重現的隨機性。
    * ------------------------------------------------------------------ */
   const MAX_ROUNDS = 15;
+  const CHAIN_RATE = 0.35, DESPERATE_HP = 0.4;
   const SHIELD_STACK = 1.6;   // 護盾可累積，總量上限為單次護盾的 1.6 倍
   const PIERCE_SHIELD = 0.5;  // 破甲技能先擊碎對手 50% 護盾；碎甲技能擊碎全部護盾；流血為真實傷害（無視護盾）
   const sane = (v, lo, hi) => (Number.isFinite(+v) ? clamp(+v, lo, hi) : lo);
@@ -2760,18 +2867,68 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
   function act(rng, a, t, round, push) {
     // 第一技能 → 覺醒技能 → 普通攻擊；被封印時這次出手不能發動技能
     let sk = null, sealed = false;
+    a.acts = (a.acts || 0) + 1;
     if (a.silenced > 0) { a.silenced--; sealed = true; }
-    else if (rng.chance(a.skill.chance || 0)) sk = a.skill;
+    else if (triggers(rng, a, a.skill)) sk = a.skill;
     else if (a.skill2 && rng.chance(a.skill2.chance || 0)) sk = a.skill2;
-    if (sk) return useSkill(rng, a, t, round, push, sk);
+    if (sk) {
+      useSkill(rng, a, t, round, push, sk);
+      // 連鎖：發動後有機率立刻再發動一次（威力 60%）
+      if (sk.trigger === 'chain' && t.hp > 0 && a.hp > 0 && rng.chance(CHAIN_RATE)) {
+        useSkill(rng, a, t, round, push, Object.assign(scaleMag(sk, 0.6), { trigger: null, chained: true }));
+      }
+      return;
+    }
     return normalAttack(rng, a, t, round, push, sealed);
+  }
+  // 技能是否發動（依觸發方式）；沒有 trigger 的技能與舊版完全相同
+  function triggers(rng, a, sk) {
+    switch (sk.trigger) {
+      case 'charge': return a.acts % (sk.every || 3) === 0;
+      case 'opening': return a.acts === 1 || rng.chance(sk.chance || 0);
+      case 'desperate': return rng.chance(Math.min(0.9, (sk.chance || 0) * (a.hp < a.maxHp * DESPERATE_HP ? 2 : 1)));
+      default: return rng.chance(sk.chance || 0);
+    }
+  }
+
+  // 複合技能的副效果：在主效果之後套用，並把說明接在同一行戰鬥紀錄後面
+  function applyRider(rng, a, t, r, ev) {
+    const dmg = ev.dmg || 0;
+    let note = '';
+    switch (r.effect) {
+      case 'bleed': if (dmg > 0 && t.hp > 0) { t.bleed = { per: Math.max(1, Math.round(dmg * r.bleed)), turns: 3 }; note = `${t.name} 開始流血`; } break;
+      case 'weaken': t.atkDown = Math.min(0.5, (t.atkDown || 0) + r.weaken); note = `${t.name} 攻擊力降至 ${Math.round((1 - t.atkDown) * 100)}%`; break;
+      case 'sunder': t.defDown = Math.min(0.6, (t.defDown || 0) + r.sunder); note = `${t.name} 防禦降至 ${Math.round((1 - t.defDown) * 100)}%`; break;
+      case 'drain': { const heal = Math.min(a.maxHp - a.hp, Math.round(dmg * r.heal)); if (heal > 0 && a.hp > 0) { a.hp += heal; ev.heal = (ev.heal || 0) + heal; note = `回復 ${heal} 生命`; } break; }
+      case 'guard': {
+        const one = Math.round(a.st.def * r.shield);
+        const gain = Math.max(0, Math.min(one, Math.round(one * SHIELD_STACK) - a.shield));
+        a.shield += gain; if (gain) note = `獲得 ${gain} 護盾`; break;
+      }
+      case 'stun': if (t.hp > 0 && rng.chance(r.stunChance)) { t.stunned = true; ev.stun = true; note = `${t.name} 被震暈了`; } break;
+      case 'silence': t.silenced = Math.max(t.silenced || 0, r.turns || 1); note = `${t.name} 的技能被封印`; break;
+      case 'regen': { const heal = Math.min(a.maxHp - a.hp, Math.round(a.maxHp * r.regen)); if (a.bleed) a.bleed = null; if (heal > 0 && a.hp > 0) { a.hp += heal; ev.heal = (ev.heal || 0) + heal; note = `回復 ${heal} 生命`; } break; }
+    }
+    if (note) ev.text = ev.text.replace(/([！。])?$/, `，並${note}！`);
+    // 更新這行紀錄的生命與護盾快照
+    ev[`hp${a.side}`] = a.hp; ev[`hp${t.side}`] = t.hp; ev[`shield${a.side}`] = a.shield; ev[`shield${t.side}`] = t.shield;
   }
 
   function useSkill(rng, a, t, round, push, sk) {
+    if (sk.rider) {
+      let ev = null;
+      useSkillCore(rng, a, t, round, (e) => { if (!ev && e.kind === 'skill') ev = e; return push(e); }, sk);
+      if (ev) applyRider(rng, a, t, sk.rider, ev);
+      return;
+    }
+    return useSkillCore(rng, a, t, round, push, sk);
+  }
+
+  function useSkillCore(rng, a, t, round, push, sk) {
     const base = { kind: 'skill', round, actor: a.side, skill: sk.name };
     if (sk.awakened) base.awakened = true;
     const tag = sk.awakened ? '覺醒技' : '';
-    const say = (msg) => `${a.name} 發動${tag}「${sk.name}」${msg}`;
+    const say = (msg) => `${a.name} ${sk.chained ? '連鎖再' : ''}發動${tag}「${sk.name}」${msg}`;
     switch (sk.effect) {
       case 'multi': {
         let total = 0, back = 0;
@@ -2928,20 +3085,33 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     let best = null;
     for (let i = 0; i < 16; i++) {
       const name = NPC_NAMES[Math.floor(rand() * NPC_NAMES.length)];
-      const base = forgeFromSeed(Math.floor(rand() * 9007199254740991), name);
+      const seed = Math.floor(rand() * 9007199254740991);
+      const base = forgeFromSeed(seed, name);
       let lv = clamp(Math.round(pLv + span(enc.lv)), 0, MASTERY_MAX);
       // 玩家已強化：對手也帶著依遭遇類型浮動的強化等級；有強化的對手熟練度必定是 Lv.20
       let e = 0;
       if (pEnh > 0) { e = clamp(Math.round(pEnh + span(enc.enh)), 0, ENH_MAX); if (e > 0) lv = MASTERY_MAX; }
       const w = applyMastery(base, 0, lv, e);
+      w.npc = { seed, ver: CURRENT_VER, owner: name, lv, enh: e, enc: enc.id };
       if (!best || Math.abs(w.power - target) < Math.abs(best.power - target)) best = w;
     }
     best.isNpc = true;
     best.encounter = { id: enc.id, name: enc.name };
     return best;
   }
+  // 由保存的對手資料重建同一位對手（重新整理頁面也不會換人）
+  function restoreOpponent(npc) {
+    if (!npc || !Number.isSafeInteger(npc.seed) || NPC_NAMES.indexOf(npc.owner) < 0) return null;
+    const enc = ENCOUNTERS.find((e) => e.id === npc.enc) || ENCOUNTERS[1];
+    const lv = clamp(npc.lv | 0, 0, MASTERY_MAX), e = lv >= MASTERY_MAX ? clamp(npc.enh | 0, 0, ENH_MAX) : 0;
+    const w = applyMastery(forgeFromSeed(npc.seed, npc.owner, npc.ver === 2 ? 2 : CURRENT_VER), 0, lv, e);
+    w.npc = { seed: npc.seed, ver: npc.ver, owner: npc.owner, lv, enh: e, enc: enc.id };
+    w.isNpc = true;
+    w.encounter = { id: enc.id, name: enc.name };
+    return w;
+  }
 
-  MWL.Opponents = { makeOpponent, NPC_NAMES, ENCOUNTERS };
+  MWL.Opponents = { makeOpponent, restore: restoreOpponent, NPC_NAMES, ENCOUNTERS };
 
   /* ------------------------------------------------------------------ *
    * Storage：localStorage 安全包裝（隱私模式或被封鎖時自動退回記憶體）
@@ -3164,7 +3334,18 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
       },
     };
   }
-  MWL.FairPlay = { canRetryNpc, createRoomCounter, dayKey };
+  // 連勝中「換個對手」的次數限制：每段連勝最多 3 次（沒有連勝時不限）。勝利後強制換人不算次數；落敗後連勝中斷、次數重置。
+  const SWITCH_LIMIT = 3;
+  function createSwitchStore(storage) {
+    return {
+      used(code) { return clamp(Math.floor(+storage.get('sw:' + code, 0)) || 0, 0, 99); },
+      // 剩餘次數；沒有連勝時回傳 Infinity
+      left(code, streak) { return (streak | 0) > 0 ? Math.max(0, SWITCH_LIMIT - this.used(code)) : Infinity; },
+      spend(code, streak) { if ((streak | 0) > 0) storage.set('sw:' + code, this.used(code) + 1); },
+      reset(code) { storage.remove('sw:' + code); },
+    };
+  }
+  MWL.FairPlay = { canRetryNpc, createRoomCounter, dayKey, SWITCH_LIMIT, createSwitchStore };
 
   /* ------------------------------------------------------------------ *
    * Holding：目前持有的武器（本機保存，只存種子碼與鑄造來源，不存名字）
@@ -3753,6 +3934,11 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
   let boardState = 'local'; // local | shared | shared-readonly
   const holding = Holding.createHolding(store);
   const roomCounter = FairPlay.createRoomCounter(store);
+  const switchStore = FairPlay.createSwitchStore(store);
+  // 目前的系統對手保存在本機（每把武器各一位），重新整理也不會換人
+  const saveOpp = (code, o) => { if (o && o.npc) store.set('opp:' + code, o.npc); };
+  const dropOpp = (code) => store.remove('opp:' + code);
+  const loadOpp = (code) => Opponents.restore(store.get('opp:' + code, null));
   const dailyStore = Daily.createStore(store);
   const profile = Achievements.createProfile(store);
   const today = () => FairPlay.dayKey();
@@ -4074,6 +4260,13 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     return '傳承';
   }
 
+  // 技能階位與複合標記
+  function skillTags(sk) {
+    const trig = sk.trigger && Forge.TRIGGER_NAMES[sk.trigger];
+    return (sk.tier ? ` <span class="skill-tier t${sk.tier}">T${sk.tier}</span>` : '') + (sk.rider ? ' <span class="skill-tier comp">複合</span>' : '')
+      + (trig ? ` <span class="skill-tier trig">${trig}</span>` : '');
+  }
+  function skillTagText(sk) { return [sk.tier ? 'T' + sk.tier : '', sk.rider ? '複合' : '', sk.trigger ? Forge.TRIGGER_NAMES[sk.trigger] : ''].filter(Boolean).join('・'); }
   function renderCard(w) {
     const card = $('#weapon-card');
     card.dataset.rarity = w.rarity.id;
@@ -4142,7 +4335,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
             <div class="mastery-meta"><span>目前 <strong>${rec.streak}</strong> 連勝・最高 <strong>${rec.bestStreak}</strong> 連勝</span><span>${rec.wins} 勝 ${rec.losses} 敗</span></div>
           </div>
           <div class="skill">
-            <span class="skill-label">武器技能</span>
+            <span class="skill-label">武器技能${skillTags(w.skill)}</span>
             <span class="skill-name">${esc(w.skill.name)}</span>
             <span class="skill-desc">${esc(w.skill.desc)}</span>
             ${boost}
@@ -4677,7 +4870,9 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     ctx.fillStyle = 'rgba(157,114,255,0.1)'; ctx.strokeStyle = 'rgba(157,114,255,0.45)'; ctx.lineWidth = 2;
     roundRect(ctx, PAD, y, W - PAD * 2, boxH, 20); ctx.fill(); ctx.stroke();
     ctx.textAlign = 'left'; ctx.fillStyle = '#9d72ff'; ctx.font = `500 24px ${FONT_BODY}`; ctx.fillText('武器技能', PAD + 28, y + 40);
-    ctx.fillStyle = '#f6eedb'; ctx.font = `900 36px ${FONT_DISPLAY}`; ctx.fillText(w.skill.name, PAD + 28 + 120, y + 42);
+    ctx.fillStyle = '#f6eedb'; fitFont(ctx, w.skill.name, 900, 36, FONT_DISPLAY, W - PAD * 2 - 260, 22); ctx.fillText(w.skill.name, PAD + 28 + 120, y + 42);
+    const stt = skillTagText(w.skill);
+    if (stt) { ctx.textAlign = 'right'; ctx.fillStyle = '#c9a3ff'; ctx.font = `700 26px ${FONT_BODY}`; ctx.fillText(stt, W - PAD - 28, y + 40); ctx.textAlign = 'left'; }
     ctx.fillStyle = '#c9c1dc'; ctx.font = `400 28px ${FONT_BODY}`;
     descLines.forEach((ln, i) => ctx.fillText(ln, PAD + 28, y + 88 + i * 40));
     y += boxH;
@@ -4721,7 +4916,12 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     $('#battle-main').hidden = !has;
     if (!has) return;
     if (!state.playing) refreshWeapon(false);
-    if (!state.opponent || (state.mustSwitch && !state.playing && state.battle && $('#battle-result').hidden)) newOpponent();
+    if (!state.opponent) {
+      // 先找回保存的對手；沒有才產生新的（不消耗換人次數）
+      const saved = loadOpp(state.weapon.code);
+      if (saved) { state.opponent = saved; state.battle = null; state.mustSwitch = false; resetBattleUI(); }
+      else newOpponent('auto');
+    } else if (state.mustSwitch && !state.playing && state.battle && $('#battle-result').hidden) newOpponent('forced');
     else if (!state.playing && !state.battle) renderFighters();
     renderDaily();
     renderStreakBar();
@@ -4732,12 +4932,31 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     const id = o.encounter && o.encounter.id;
     return id === 'elite' ? `⚠️ 遭遇精英對手：${o.owner}！擊敗可得大量經驗` : id === 'strong' ? `遭遇強敵：${o.owner}` : id === 'weak' ? `對手看起來不太強：${o.owner}` : `新對手：${o.owner}`;
   }
-  function newOpponent() {
-    if (state.playing) return;
-    state.opponent = Opponents.makeOpponent(state.weapon, undefined, masteryStore.get(state.weapon.code).streak);
+  // kind：'manual' 玩家按「換個對手」（連勝中有次數限制）｜'forced' 勝利後強制換人｜'auto' 沒有對手時
+  function newOpponent(kind) {
+    if (state.playing) return false;
+    const code = state.weapon.code, streak = masteryStore.get(code).streak;
+    // 剛打完每日守關者：回到原本保存的系統對手，不算換人
+    if (state.opponent && state.opponent.isDaily) {
+      const saved = loadOpp(code);
+      if (saved) { state.opponent = saved; state.battle = null; state.mustSwitch = false; resetBattleUI(); return true; }
+    }
+    if (kind === 'manual') {
+      if (switchStore.left(code, streak) <= 0) { toast('這段連勝的換對手次數已用完，打贏或打輸才能換人'); return false; }
+      switchStore.spend(code, streak);
+    }
+    state.opponent = Opponents.makeOpponent(state.weapon, undefined, streak);
+    saveOpp(code, state.opponent);
     state.battle = null;
     state.mustSwitch = false;
     resetBattleUI();
+    return true;
+  }
+  // 「換個對手」按鈕文字：連勝中顯示剩餘次數
+  function switchLabel() {
+    const code = state.weapon.code, streak = masteryStore.get(code).streak, left = switchStore.left(code, streak);
+    if (left === Infinity) return { text: '換個對手', off: false };
+    return left > 0 ? { text: `換個對手（連勝中剩 ${left} 次）`, off: false } : { text: '換對手次數已用完', off: true };
   }
   function startDaily() {
     if (state.playing || dailyStore.status(today()).done) return;
@@ -4789,7 +5008,8 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     $('#btn-retry').disabled = true;
     $('#btn-retry').hidden = false;
     const nb = $('#btn-new-opp');
-    nb.disabled = false; nb.textContent = '換個對手'; nb.classList.remove('btn-primary', 'wide');
+    const sl = state.weapon ? switchLabel() : { text: '換個對手', off: false };
+    nb.disabled = sl.off; nb.textContent = sl.text; nb.classList.remove('btn-primary', 'wide');
   }
 
   function fighterHTML(w, tag, hp, maxHp, pfx) {
@@ -4802,7 +5022,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
         <div class="hp-bar" aria-hidden="true"><span style="width:${(hp / maxHp) * 100}%"></span><em></em></div>
         <div class="hp-num"><span>生命</span><span class="hp-val">${hp} / ${maxHp}</span></div>
       </div>
-      <div class="mini-stats">攻 ${w.stats.atk}・防 ${w.stats.def}<br>速 ${w.stats.spd}・暴 ${w.stats.crit}%<br>技能 ${esc(w.skill.name)}${w.skill2 ? `<br>覺醒 ${esc(w.skill2.name)}` : ''}<br>戰力 ${w.power}</div>`;
+      <div class="mini-stats">攻 ${w.stats.atk}・防 ${w.stats.def}<br>速 ${w.stats.spd}・暴 ${w.stats.crit}%<br>技能 ${esc(w.skill.name)}${skillTagText(w.skill) ? `（${skillTagText(w.skill)}）` : ''}${w.skill2 ? `<br>覺醒 ${esc(w.skill2.name)}` : ''}<br>戰力 ${w.power}</div>`;
   }
   function previewHp(w) { return Math.max(1, Math.round(320 + w.stats.def * 1.6 + w.stats.atk * 0.4)); }
   function renderFighters() {
@@ -4880,6 +5100,9 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
       }
     }
     state.mustSwitch = !FairPlay.canRetryNpc(result);
+    // 勝負已分（勝或平）：這位對手作廢，下次一定換人；落敗：連勝中斷，換人次數重置
+    if (!state.opponent.isDaily && state.mustSwitch) dropOpp(state.weapon.code);
+    if (result === 'loss') switchStore.reset(state.weapon.code);
     publishCurrent();
     state.playing = true;
     state.skip = reduceMotion;
@@ -4927,8 +5150,9 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     $('#btn-retry').disabled = state.mustSwitch;
     $('#btn-retry').hidden = state.mustSwitch;
     const nb = $('#btn-new-opp');
-    nb.disabled = false;
-    nb.textContent = state.mustSwitch ? '迎戰下一位對手' : '換個對手';
+    const sl = switchLabel();
+    nb.disabled = state.mustSwitch ? false : sl.off;
+    nb.textContent = state.mustSwitch ? '迎戰下一位對手' : sl.text;
     nb.classList.toggle('btn-primary', state.mustSwitch);
     nb.classList.toggle('wide', state.mustSwitch);
     $('#btn-back-card').disabled = false;
@@ -4979,7 +5203,9 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
   $('#btn-fight').addEventListener('click', startBattle);
   $('#btn-skip').addEventListener('click', () => { state.skip = true; });
   $('#btn-retry').addEventListener('click', () => { if (state.mustSwitch) return; state.battle = null; startBattle(); });
-  $('#btn-new-opp').addEventListener('click', () => { newOpponent(); toast(encounterToast(state.opponent)); });
+  $('#btn-new-opp').addEventListener('click', () => {
+    if (newOpponent(state.mustSwitch ? 'forced' : 'manual')) toast(encounterToast(state.opponent));
+  });
   $('#btn-back-card').addEventListener('click', () => show('result'));
 
   /* ---------------- 開房對戰 ---------------- */
