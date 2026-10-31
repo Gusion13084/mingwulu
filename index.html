@@ -3926,7 +3926,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
       const uid = cred.user.uid;
       const db = fb.database(app);
       if (typeof db.goOffline === 'function') db.goOffline(); // 預設離線，需要時才連線
-      return { fb, db, uid };
+      return { fb, db, uid, auth };
     })().catch((e) => { console.warn('雲端連線失敗', e); return null; });
     return readyP;
   }
@@ -3949,12 +3949,50 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
   }
   let seq = 0;
 
+  /* ---------- REST 備援 ----------
+   * 有些網路或瀏覽器會擋住 Firebase 的即時連線（WebSocket），導致排行一直讀不到。
+   * 這時改用一般的 HTTPS 請求（REST API）讀寫：讀取不需登入（規則允許公開讀取），寫入帶上匿名登入的憑證。 */
+  const BASE = config && config.databaseURL ? String(config.databaseURL).replace(/\/+$/, '') : '';
+  function withTimeout(p, ms, label) {
+    return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(Object.assign(new Error(label + ' 逾時'), { code: label + '逾時' })), ms))]);
+  }
+  async function restGet(path, params) {
+    const qs = Object.entries(params || {}).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
+    const res = await withTimeout(fetch(`${BASE}/${path}.json${qs ? '?' + qs : ''}`, { cache: 'no-store' }), 8000, 'REST讀取');
+    if (!res.ok) throw Object.assign(new Error('HTTP ' + res.status), { code: 'HTTP ' + res.status });
+    return res.json();
+  }
+  async function restWrite(auth, path, method, body) {
+    const token = auth && auth.currentUser ? await withTimeout(auth.currentUser.getIdToken(), 8000, '登入憑證') : '';
+    const res = await withTimeout(fetch(`${BASE}/${path}.json?auth=${encodeURIComponent(token)}`, {
+      method, headers: { 'Content-Type': 'application/json' }, body: body == null ? undefined : JSON.stringify(body),
+    }), 8000, 'REST寫入');
+    if (!res.ok) throw Object.assign(new Error('HTTP ' + res.status), { code: 'HTTP ' + res.status });
+  }
+  // 診斷資訊（排行頁出錯時顯示）
+  const diag = { ws: 'unknown', rest: 'unknown', lastError: '' };
+
   /* ---------- 全球排行 ---------- */
   async function leaderboard() {
     const c = await ready();
     if (!c) return null;
-    const { db, uid } = c;
+    const { db, uid, auth } = c;
     const L = MWL.Leaderboard;
+    const fromObject = (obj, mode) => {
+      const rows = [];
+      for (const [k, v] of Object.entries(obj || {})) {
+        try {
+          const r = L.boardRow(k, v);
+          if (r) rows.push(Object.assign(r, { source: 'cloud', isMe: k === uid }));
+        } catch (e) { /* 略過壞資料 */ }
+      }
+      return L.sortBoard(rows, mode);
+    };
+    const restTop = async (mode) => {
+      const obj = await restGet('players', { orderBy: JSON.stringify(mode === 'streak' ? 'bestStreak' : 'power'), limitToLast: 100 });
+      diag.rest = 'ok';
+      return fromObject(obj, mode);
+    };
     const toRows = (snap, mode) => {
       const rows = [];
       snap.forEach((child) => {
@@ -3971,24 +4009,54 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
       info: { source: 'cloud', shared: true, label: '全球玩家排行' },
       canWrite: true,
       myId: uid,
-      async getTop(limit, mode) { return toRows(await query(mode).once('value'), mode).slice(0, limit || 100); },
+      diag,
+      // 一次性讀取：先走 REST（最不容易被擋），失敗再用即時連線
+      async getTop(limit, mode) {
+        try { return (await restTop(mode)).slice(0, limit || 100); } catch (e) { diag.rest = e.code || e.message; }
+        const key = 'g' + (++seq);
+        hold(db, key);
+        try { return toRows(await withTimeout(query(mode).once('value'), 8000, '即時連線'), mode).slice(0, limit || 100); }
+        finally { release(db, key); }
+      },
+      // 即時更新：同時用 REST 先抓一次（畫面立刻有資料），再掛上即時連線；即時連線斷掉時每 30 秒用 REST 更新
       subscribe(cb, onError, mode) {
         const key = 'board' + (++seq);
         hold(db, key);
+        let live = false, closed = false, restFail = null;
         const q = query(mode);
-        const handler = (snap) => { let rows; try { rows = toRows(snap, mode); } catch (e) { if (onError) onError(e); return; } cb(rows); };
-        q.on('value', handler, (e) => onError && onError(e));
-        return () => { q.off('value', handler); release(db, key); };
+        const handler = (snap) => {
+          live = true; diag.ws = 'ok';
+          let rows; try { rows = toRows(snap, mode); } catch (e) { if (onError) onError(e); return; }
+          if (!closed) cb(rows);
+        };
+        const poll = () => restTop(mode).then((rows) => { if (!closed && !live) cb(rows); }, (e) => {
+          diag.rest = e.code || e.message; restFail = e;
+          // 兩條路都失敗才回報錯誤
+          if (!closed && !live && diag.ws !== 'ok') setTimeout(() => { if (!closed && !live && onError) onError(Object.assign(new Error('排行讀取失敗'), { code: `即時連線無回應／REST：${restFail.code || restFail.message}` })); }, 6000);
+        });
+        poll();
+        const timer = setInterval(() => { if (!live) poll(); }, 30000);
+        q.on('value', handler, (e) => { diag.ws = e.code || e.message; if (onError) onError(e); });
+        return () => { closed = true; clearInterval(timer); q.off('value', handler); release(db, key); };
       },
+      // 寫入：先用即時連線（8 秒內沒回應就改用 REST）
       async upsert(entry) {
+        const doc = L.boardDoc(entry);
         const key = 'w' + (++seq);
         hold(db, key);
-        try { await db.ref('players/' + uid).set(L.boardDoc(entry)); } finally { release(db, key); }
+        try { await withTimeout(db.ref('players/' + uid).set(doc), 8000, '即時寫入'); }
+        catch (e) {
+          if (e && /PERMISSION|permission/.test(String(e.code || e.message))) throw e;
+          diag.lastError = e.code || e.message;
+          await restWrite(auth, 'players/' + uid, 'PUT', doc);
+        } finally { release(db, key); }
       },
       async clearMine() {
         const key = 'w' + (++seq);
         hold(db, key);
-        try { await db.ref('players/' + uid).remove(); } finally { release(db, key); }
+        try { await withTimeout(db.ref('players/' + uid).remove(), 8000, '即時寫入'); }
+        catch (e) { await restWrite(auth, 'players/' + uid, 'DELETE'); }
+        finally { release(db, key); }
       },
     };
   }
@@ -4033,7 +4101,7 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     };
   }
 
-  MWL.Cloud = { enabled: !!config, ready, leaderboard, roomTransport, SDK, _holds: holds };
+  MWL.Cloud = { enabled: !!config, ready, leaderboard, roomTransport, SDK, diag, _holds: holds };
 })();
 
 </script>
@@ -5800,7 +5868,9 @@ window.MWL_SITE_URL = window.MWL_SITE_URL || "https://gusion13084.github.io/ming
     const fail = (msg, err) => {
       if (err) console.error('[排行榜]', err);
       if (board !== myBoard || state.view !== 'board') return;
-      list.innerHTML = `<li class="empty">${esc(msg)}${err && (err.code || err.message) ? `<br><small style="color:var(--faint)">（${esc(String(err.code || err.message)).slice(0, 80)}）</small>` : ''}<br><button class="btn" type="button" data-board-retry>重新讀取</button></li>`;
+      const d = window.MWL.Cloud && window.MWL.Cloud.enabled && window.MWL.Cloud.diag;
+      const detail = [err && (err.code || err.message) ? String(err.code || err.message) : '', d ? `即時連線：${d.ws}・REST：${d.rest}` : ''].filter(Boolean).join('｜');
+      list.innerHTML = `<li class="empty">${esc(msg)}${detail ? `<br><small style="color:var(--faint)">（${esc(detail.slice(0, 120))}）</small>` : ''}<br><button class="btn" type="button" data-board-retry>重新讀取</button></li>`;
     };
     clearTimeout(renderBoard._t);
     renderBoard._t = setTimeout(() => {
